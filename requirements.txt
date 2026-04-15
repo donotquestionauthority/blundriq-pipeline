@@ -1,0 +1,10 @@
+supabase
+psycopg2-binary
+requests
+python-chess
+pandas
+streamlit
+plotly
+python-dotenv
+python-dateutil
+bcrypt

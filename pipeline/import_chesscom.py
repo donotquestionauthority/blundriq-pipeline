@@ -1,0 +1,209 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import requests
+import json
+from datetime import datetime, timezone
+from dateutil.relativedelta import relativedelta
+from dotenv import load_dotenv
+load_dotenv()
+
+from db import get_conn, get_all_active_players, log_pipeline_run
+from config import INITIAL_IMPORT_MONTHS
+from utils import ts, moves_to_fen_sequence
+
+HEADERS = {
+    "User-Agent": "initiative-chess/1.0 (github.com/donotquestionauthority/initiative)"
+}
+
+def get_archives(username: str) -> list:
+    url = f"https://api.chess.com/pub/player/{username}/games/archives"
+    r = requests.get(url, headers=HEADERS, timeout=10)
+    r.raise_for_status()
+    return r.json().get("archives", [])
+
+def get_games_from_archive(url: str) -> list:
+    r = requests.get(url, headers=HEADERS, timeout=10)
+    r.raise_for_status()
+    return r.json().get("games", [])
+
+def parse_moves(pgn: str) -> list:
+    import re
+    pgn = re.sub(r'\[[^\]]*\]', '', pgn)
+    pgn = re.sub(r'\{[^}]*\}', '', pgn)
+    pgn = re.sub(r'\s*(1-0|0-1|1/2-1/2)\s*$', '', pgn)
+    pgn = re.sub(r'\d+\.+', '', pgn)
+    moves = [m.strip() for m in pgn.split() if m.strip()]
+    return moves
+
+def get_result(game: dict, username: str) -> str:
+    white = game.get("white", {})
+    black = game.get("black", {})
+    if white.get("username", "").lower() == username.lower():
+        result = white.get("result", "")
+    else:
+        result = black.get("result", "")
+    if result == "win":
+        return "win"
+    elif result in ("checkmated", "timeout", "resigned", "lose", "abandoned"):
+        return "loss"
+    else:
+        return "draw"
+
+def get_player_color(game: dict, username: str) -> str:
+    white = game.get("white", {}).get("username", "").lower()
+    return "white" if white == username.lower() else "black"
+
+def get_opponent(game: dict, username: str) -> tuple:
+    white = game.get("white", {})
+    black = game.get("black", {})
+    if white.get("username", "").lower() == username.lower():
+        opponent = black
+        player = white
+    else:
+        opponent = white
+        player = black
+    return (
+        opponent.get("username", ""),
+        opponent.get("rating", None),
+        player.get("rating", None)
+    )
+def parse_pgn_headers(pgn: str) -> dict:
+    """Extract headers from PGN string."""
+    import re
+    headers = {}
+    for match in re.finditer(r'\[(\w+)\s+"([^"]*)"\]', pgn):
+        headers[match.group(1)] = match.group(2)
+    return headers
+
+def filter_recent_archives(archives: list, months: int) -> list:
+    cutoff = datetime.now(timezone.utc) - relativedelta(months=months)
+    filtered = []
+    for url in archives:
+        parts = url.rstrip("/").split("/")
+        year, month = int(parts[-2]), int(parts[-1])
+        archive_date = datetime(year, month, 1, tzinfo=timezone.utc)
+        if archive_date >= cutoff:
+            filtered.append(url)
+    return filtered
+
+def import_chesscom_games(conn, player: dict, months: int = None):
+    username = player["chesscom_username"]
+    if not username:
+        print(f"[{ts()}] Player {player['user_display_name']} has no Chess.com username, skipping.")
+        return 0
+
+    if months is None:
+        months = INITIAL_IMPORT_MONTHS
+
+    print(f"[{ts()}] Fetching Chess.com games for {username}...")
+    archives = get_archives(username)
+    archives = filter_recent_archives(archives, months)
+    print(f"[{ts()}] Found {len(archives)} archive(s) to process.")
+
+    inserted = 0
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT MAX(played_at) FROM games
+            WHERE player_id = %s AND source = 'chesscom'
+        """, (player["id"],))
+        row = cur.fetchone()
+        latest = row["max"] if row and row["max"] else None
+
+    for archive_url in archives:
+        try:
+            games = get_games_from_archive(archive_url)
+        except Exception as e:
+            print(f"[{ts()}] Failed to fetch {archive_url}: {e}")
+            continue
+
+        for game in games:
+            if game.get("rules") != "chess":
+                continue
+            pgn = game.get("pgn", "")
+            if not pgn:
+                continue
+
+            end_time = game.get("end_time")
+            played_at = datetime.fromtimestamp(end_time, tz=timezone.utc) if end_time else None
+
+            if latest and played_at and played_at <= latest:
+                continue
+
+            source_game_id = game.get("url", "").split("/")[-1]
+            player_color = get_player_color(game, username)
+            opponent_username, opponent_rating, player_rating = get_opponent(game, username)
+            result = get_result(game, username)
+            moves = parse_moves(pgn)
+            headers = parse_pgn_headers(pgn)
+            eco = headers.get("ECO", "")
+            eco_url = headers.get("ECOUrl", "")
+            opening_name = eco_url.split("/openings/")[-1].replace("-", " ") if eco_url else ""
+            opening = {"name": opening_name, "eco": eco}
+
+            try:
+                with conn.cursor() as cur:
+                    fen_seq = moves_to_fen_sequence(moves)
+                    cur.execute("""
+                        INSERT INTO games (
+                            player_id, source, source_game_id, url,
+                            player_color, opponent_username, opponent_rating,
+                            player_rating, time_control, result, moves,
+                            fen_sequence, opening_name, opening_eco, played_at
+                        ) VALUES (
+                            %s, 'chesscom', %s, %s,
+                            %s, %s, %s,
+                            %s, %s, %s, %s,
+                            %s, %s, %s, %s
+                        )
+                        ON CONFLICT (source, source_game_id) DO NOTHING
+                    """, (
+                        player["id"],
+                        source_game_id,
+                        game.get("url"),
+                        player_color,
+                        opponent_username,
+                        opponent_rating,
+                        player_rating,
+                        game.get("time_control"),
+                        result,
+                        json.dumps(moves),
+                        json.dumps(fen_seq),
+                        opening.get("name", ""),
+                        opening.get("eco", ""),
+                        played_at
+                    ))
+                    if cur.rowcount > 0:
+                        inserted += 1
+                conn.commit()
+            except Exception as e:
+                print(f"[{ts()}] Failed to insert game {source_game_id}: {e}")
+                conn.rollback()
+
+    print(f"[{ts()}] Imported {inserted} new Chess.com games for {username}.")
+    
+    # Update last checked timestamp regardless of how many games were found
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE players SET chesscom_last_checked = NOW()
+            WHERE id = %s
+        """, (player["id"],))
+    conn.commit()
+    
+    return inserted
+
+def main():
+    conn = get_conn()
+    players = get_all_active_players(conn)
+    print(f"[{ts()}] Found {len(players)} active players.")
+    total_inserted = 0
+    for player in players:
+        print(f"[{ts()}] Processing {player['user_display_name']}...")
+        inserted = import_chesscom_games(conn, player)
+        total_inserted += inserted
+    print(f"[{ts()}] Total imported: {total_inserted} new Chess.com games.")
+    conn.close()
+
+if __name__ == "__main__":
+    main()
