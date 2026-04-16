@@ -3,6 +3,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import json
 from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
@@ -14,17 +16,37 @@ from config import INITIAL_IMPORT_MONTHS
 from utils import ts, moves_to_fen_sequence
 
 HEADERS = {
-    "User-Agent": "initiative-chess/1.0 (github.com/donotquestionauthority/initiative)"
+    "User-Agent": "blundriq/1.0 (github.com/donotquestionauthority/blundriq-pipeline)"
 }
+
+# ─── Retry session ────────────────────────────────────────────────────────────
+# Retries up to 3 times on connection errors and 5xx responses.
+# Backoff: 0s, 2s, 4s between attempts (factor=2, first retry immediate).
+def _make_session() -> requests.Session:
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=2,
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=["GET"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+SESSION = _make_session()
+
 
 def get_archives(username: str) -> list:
     url = f"https://api.chess.com/pub/player/{username}/games/archives"
-    r = requests.get(url, headers=HEADERS, timeout=10)
+    r = SESSION.get(url, headers=HEADERS, timeout=10)
     r.raise_for_status()
     return r.json().get("archives", [])
 
 def get_games_from_archive(url: str) -> list:
-    r = requests.get(url, headers=HEADERS, timeout=10)
+    r = SESSION.get(url, headers=HEADERS, timeout=10)
     r.raise_for_status()
     return r.json().get("games", [])
 
@@ -69,8 +91,8 @@ def get_opponent(game: dict, username: str) -> tuple:
         opponent.get("rating", None),
         player.get("rating", None)
     )
+
 def parse_pgn_headers(pgn: str) -> dict:
-    """Extract headers from PGN string."""
     import re
     headers = {}
     for match in re.finditer(r'\[(\w+)\s+"([^"]*)"\]', pgn):
@@ -182,15 +204,14 @@ def import_chesscom_games(conn, player: dict, months: int = None):
                 conn.rollback()
 
     print(f"[{ts()}] Imported {inserted} new Chess.com games for {username}.")
-    
-    # Update last checked timestamp regardless of how many games were found
+
     with conn.cursor() as cur:
         cur.execute("""
             UPDATE players SET chesscom_last_checked = NOW()
             WHERE id = %s
         """, (player["id"],))
     conn.commit()
-    
+
     return inserted
 
 def main():

@@ -3,6 +3,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import json
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -15,8 +17,28 @@ from utils import ts, moves_to_fen_sequence
 LICHESS_API = "https://lichess.org/api"
 HEADERS = {
     "Accept": "application/x-ndjson",
-    "User-Agent": "initiative-chess/1.0 (github.com/donotquestionauthority/initiative)"
+    "User-Agent": "blundriq/1.0 (github.com/donotquestionauthority/blundriq-pipeline)"
 }
+
+# ─── Retry session ────────────────────────────────────────────────────────────
+# Retries up to 3 times on connection errors and 5xx responses.
+# Backoff: 0s, 2s, 4s between attempts (factor=2, first retry immediate).
+def _make_session() -> requests.Session:
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=2,
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=["GET"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+SESSION = _make_session()
+
 
 def get_result(game: dict, username: str) -> str:
     winner = game.get("winner")
@@ -91,7 +113,7 @@ def import_lichess_games(conn, player: dict):
         "format": "application/x-ndjson"
     }
 
-    r = requests.get(url, headers=HEADERS, params=params, stream=True, timeout=30)
+    r = SESSION.get(url, headers=HEADERS, params=params, stream=True, timeout=30)
     r.raise_for_status()
 
     inserted = 0
@@ -168,15 +190,14 @@ def import_lichess_games(conn, player: dict):
             conn.rollback()
 
     print(f"[{ts()}] Imported {inserted} new Lichess games for {username}.")
-    
-    # Update last checked timestamp regardless of how many games were found
+
     with conn.cursor() as cur:
         cur.execute("""
             UPDATE players SET lichess_last_checked = NOW()
             WHERE id = %s
         """, (player["id"],))
     conn.commit()
-    
+
     return inserted
 
 def main():
