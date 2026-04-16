@@ -102,6 +102,11 @@ def analyze_game(engine, game: dict, player_color: str) -> list:
         if not is_player_move:
             continue
 
+        # If the move played was already the best move, it's not a blunder —
+        # the cp_loss reflects a bad position, not a bad move.
+        if best_move_san and san == best_move_san:
+            continue
+
         classification = classify(cp_loss)
         if classification is None:
             continue
