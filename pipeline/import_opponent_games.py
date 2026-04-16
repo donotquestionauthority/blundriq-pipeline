@@ -271,6 +271,27 @@ def insert_opponent_games(conn, profile_id: int, source_type: str,
                         ON CONFLICT DO NOTHING
                     """, fen_rows)
 
+                # Update opponent_fen_stats summary table for affected FENs
+                if fen_rows:
+                    cur.execute("""
+                        INSERT INTO opponent_fen_stats
+                            (opponent_profile_id, fen, max_depth, game_count, most_common_color)
+                        SELECT
+                            opponent_profile_id,
+                            fen,
+                            MAX(depth)                                    AS max_depth,
+                            COUNT(DISTINCT opponent_game_id)              AS game_count,
+                            MODE() WITHIN GROUP (ORDER BY played_as)      AS most_common_color
+                        FROM opponent_game_fens
+                        WHERE opponent_profile_id = %s
+                          AND fen IN %s
+                        GROUP BY opponent_profile_id, fen
+                        ON CONFLICT (opponent_profile_id, fen) DO UPDATE
+                            SET max_depth         = EXCLUDED.max_depth,
+                                game_count        = EXCLUDED.game_count,
+                                most_common_color = EXCLUDED.most_common_color
+                    """, (profile_id, tuple({r[2] for r in fen_rows})))
+
             conn.commit()
 
         except Exception as e:
