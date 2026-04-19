@@ -13,7 +13,7 @@ def get_conn():
 
 
 def get_all_active_players(conn):
-    """Returns all active, initialized player records."""
+    """Returns all active, approved, initialized player records."""
     with conn.cursor() as cur:
         cur.execute("""
             SELECT p.*, u.email, u.display_name as user_display_name
@@ -21,6 +21,7 @@ def get_all_active_players(conn):
             JOIN users u ON u.id = p.user_id
             WHERE p.active = TRUE
               AND u.active = TRUE
+              AND u.registration_approved = TRUE
               AND p.is_initialized = TRUE
         """)
         return cur.fetchall()

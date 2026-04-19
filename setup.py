@@ -25,6 +25,7 @@ def main():
             JOIN users u ON u.id = p.user_id
             WHERE p.active = TRUE
               AND u.active = TRUE
+              AND u.registration_approved = TRUE
               AND p.is_initialized = FALSE
         """)
         players = cur.fetchall()
