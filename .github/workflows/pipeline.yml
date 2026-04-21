@@ -71,3 +71,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python pipeline/import_opponent_games.py
+
+      - name: Housekeeping
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python pipeline/housekeeping.py

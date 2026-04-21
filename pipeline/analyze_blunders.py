@@ -223,14 +223,6 @@ def main():
     for row in breakdown:
         print(f"  {row['classification']}: {row['count']}")
 
-    # Clean up expired refresh tokens — runs opportunistically each pipeline run
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM refresh_tokens WHERE expires_at < NOW()")
-        deleted = cur.rowcount
-    conn.commit()
-    if deleted:
-        print(f"[{ts()}] Cleaned up {deleted} expired refresh token(s)")
-
     conn.close()
 
 if __name__ == "__main__":
