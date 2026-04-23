@@ -12,10 +12,12 @@ load_dotenv()
 from db import get_conn, get_all_active_players, get_unanalyzed_games_for_player
 from config import (
     STOCKFISH_DEPTH,
+    STOCKFISH_VERSION,
     INACCURACY_THRESHOLD,
     MISTAKE_THRESHOLD,
     BLUNDER_THRESHOLD,
-    MISS_THRESHOLD
+    MISS_THRESHOLD,
+    MISS_CONTESTED_GATE,
 )
 from utils import ts
 
@@ -36,14 +38,29 @@ def find_stockfish() -> str:
         "Stockfish not found. Install with: brew install stockfish"
     )
 
-def classify(centipawn_loss: int) -> str:
-    if centipawn_loss >= MISS_THRESHOLD:
-        return "miss"
-    elif centipawn_loss >= BLUNDER_THRESHOLD:
+def classify(cp_loss: int, eval_before_white: int, player_color: str) -> str | None:
+    """
+    Classify a move error by centipawn loss.
+
+    Miss requires the position to have been contested (within MISS_CONTESTED_GATE
+    from the player's perspective) before the error. This prevents mate-score
+    contamination from already-decided games inflating the miss count.
+    If the contested gate is not met, a miss-threshold loss falls through to
+    blunder/mistake/inaccuracy instead of being dropped entirely.
+    """
+    player_eval = eval_before_white if player_color == "white" else -eval_before_white
+
+    if cp_loss >= MISS_THRESHOLD:
+        if abs(player_eval) <= MISS_CONTESTED_GATE:
+            return "miss"
+        # Position was already decided — reclassify downward rather than drop
+        # Fall through to blunder/mistake/inaccuracy checks below
+
+    if cp_loss >= BLUNDER_THRESHOLD:
         return "blunder"
-    elif centipawn_loss >= MISTAKE_THRESHOLD:
+    if cp_loss >= MISTAKE_THRESHOLD:
         return "mistake"
-    elif centipawn_loss >= INACCURACY_THRESHOLD:
+    if cp_loss >= INACCURACY_THRESHOLD:
         return "inaccuracy"
     return None
 
@@ -58,6 +75,22 @@ def get_phase(ply: int, board: chess.Board) -> str:
     if pieces <= 6:
         return "endgame"
     return "middlegame"
+
+def capture_pv_san(board: chess.Board, pv_moves: list, n: int = 5) -> str | None:
+    """
+    Convert the first N moves of a Stockfish PV into a SAN string.
+    Returns None if the PV is empty.
+    Used to populate best_line for AI explanations.
+    """
+    san_list = []
+    b = board.copy()
+    for move in pv_moves[:n]:
+        try:
+            san_list.append(b.san(move))
+            b.push(move)
+        except Exception:
+            break
+    return " ".join(san_list) if san_list else None
 
 def analyze_game(engine, game: dict, player_color: str) -> list:
     moves = game["moves"]
@@ -76,14 +109,16 @@ def analyze_game(engine, game: dict, player_color: str) -> list:
         except Exception:
             break
 
-        info_before = engine.analyse(board, chess.engine.Limit(depth=STOCKFISH_DEPTH))
-        score_before = info_before["score"].white().score(mate_score=10000)
-        best_move = info_before.get("pv", [None])[0]
-        best_move_san = board.san(best_move) if best_move else None
+        info_before      = engine.analyse(board, chess.engine.Limit(depth=STOCKFISH_DEPTH))
+        score_before     = info_before["score"].white().score(mate_score=10000)
+        pv               = info_before.get("pv", [])
+        best_move_obj    = pv[0] if pv else None
+        best_move_san    = board.san(best_move_obj) if best_move_obj else None
+        best_line        = capture_pv_san(board, pv, n=5)
 
         board.push(move)
 
-        info_after = engine.analyse(board, chess.engine.Limit(depth=STOCKFISH_DEPTH))
+        info_after  = engine.analyse(board, chess.engine.Limit(depth=STOCKFISH_DEPTH))
         score_after = info_after["score"].white().score(mate_score=10000)
 
         if score_before is None or score_after is None:
@@ -107,12 +142,12 @@ def analyze_game(engine, game: dict, player_color: str) -> list:
         if best_move_san and san == best_move_san:
             continue
 
-        classification = classify(cp_loss)
+        classification = classify(max(0, cp_loss), score_before, player_color)
         if classification is None:
             continue
 
         board.pop()
-        fen = board.fen()
+        fen   = board.fen()
         phase = get_phase(ply, board)
         board.push(move)
 
@@ -122,6 +157,7 @@ def analyze_game(engine, game: dict, player_color: str) -> list:
             "fen":            fen,
             "move_played":    san,
             "best_move":      best_move_san,
+            "best_line":      best_line,
             "centipawn_loss": max(0, cp_loss),
             "classification": classification,
             "opening_eco":    game.get("opening_eco", ""),
@@ -135,10 +171,21 @@ def insert_blunders(conn, game_id: int, blunders: list):
     with conn.cursor() as cur:
         cur.executemany("""
             INSERT INTO blunders
-                (game_id, ply, phase, fen, move_played, best_move,
-                 centipawn_loss, classification, opening_eco)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (game_id, ply) DO NOTHING
+                (game_id, ply, phase, fen, move_played, best_move, best_line,
+                 centipawn_loss, classification, opening_eco,
+                 engine_version, analysis_depth)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (game_id, ply) DO UPDATE SET
+                phase          = EXCLUDED.phase,
+                fen            = EXCLUDED.fen,
+                move_played    = EXCLUDED.move_played,
+                best_move      = EXCLUDED.best_move,
+                best_line      = EXCLUDED.best_line,
+                centipawn_loss = EXCLUDED.centipawn_loss,
+                classification = EXCLUDED.classification,
+                opening_eco    = EXCLUDED.opening_eco,
+                engine_version = EXCLUDED.engine_version,
+                analysis_depth = EXCLUDED.analysis_depth
         """, [
             (
                 game_id,
@@ -147,9 +194,12 @@ def insert_blunders(conn, game_id: int, blunders: list):
                 b["fen"],
                 b["move_played"],
                 b["best_move"],
+                b["best_line"],
                 b["centipawn_loss"],
                 b["classification"],
                 b["opening_eco"],
+                STOCKFISH_VERSION,
+                STOCKFISH_DEPTH,
             )
             for b in blunders
         ])
@@ -158,8 +208,12 @@ def insert_blunders(conn, game_id: int, blunders: list):
 def mark_analyzed(conn, game_id: int):
     with conn.cursor() as cur:
         cur.execute("""
-            UPDATE games SET stockfish_analyzed = TRUE WHERE id = %s
-        """, (game_id,))
+            UPDATE games
+            SET stockfish_analyzed = TRUE,
+                analysis_engine    = %s,
+                analysis_depth     = %s
+            WHERE id = %s
+        """, (STOCKFISH_VERSION, STOCKFISH_DEPTH, game_id))
     conn.commit()
 
 def main():

@@ -25,16 +25,38 @@ CHESSABLE_BOOKS = [
     (159903, "white"),   # Giri 1.e4 Part 3 (inactive)
 ]
 
-# Stockfish analysis depth
-STOCKFISH_DEPTH = 18
+# ─── Stockfish ───────────────────────────────────────────────────────────────
+STOCKFISH_DEPTH   = 18
+STOCKFISH_VERSION = "stockfish_18"   # written to blunders.engine_version and games.analysis_engine
 
-# Centipawn loss thresholds
-INACCURACY_THRESHOLD = 25
-MISTAKE_THRESHOLD    = 50
-BLUNDER_THRESHOLD    = 100
-MISS_THRESHOLD       = 200
+# ─── Analysis window ─────────────────────────────────────────────────────────
+# Only the most recent N games per player are analyzed and stored.
+# Games outside this window have their blunders deleted and analysis columns nullified.
+ANALYSIS_GAME_LIMIT = 500
 
-# Priority scoring weights for blunder clustering
+# Fast pass depth — used for two-phase onboarding (quick first pass)
+FAST_PASS_DEPTH = 12
+
+# ─── Centipawn loss thresholds ────────────────────────────────────────────────
+# Industry-aligned thresholds (validated against 200-game dataset, Apr 2026).
+# Prior values (25/50/100/200) over-classified by ~29%.
+INACCURACY_THRESHOLD = 50
+MISTAKE_THRESHOLD    = 100
+BLUNDER_THRESHOLD    = 200
+MISS_THRESHOLD       = 300
+
+# Miss contested gate: a miss only fires if the position was roughly balanced
+# before the error. If the player was already losing/winning by more than this,
+# the large cp drop is noise from a decided game, not a meaningful mistake.
+# Value is in centipawns from the player's perspective (absolute).
+MISS_CONTESTED_GATE = 300
+
+# UI display cap: blunders with cp_loss above this are mate-score contamination
+# from decided games. Filter on the blunders API endpoint, not at storage time
+# (we want the raw data in the DB).
+MAX_CP_DISPLAY = 500
+
+# ─── Priority scoring weights for blunder clustering ─────────────────────────
 CLASSIFICATION_WEIGHTS = {
     'miss':       8,
     'blunder':    4,

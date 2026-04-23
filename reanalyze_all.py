@@ -31,10 +31,13 @@ load_dotenv()
 from db import get_conn, get_all_active_players
 from config import (
     STOCKFISH_DEPTH,
+    STOCKFISH_VERSION,
     INACCURACY_THRESHOLD,
     MISTAKE_THRESHOLD,
     BLUNDER_THRESHOLD,
     MISS_THRESHOLD,
+    MISS_CONTESTED_GATE,
+    ANALYSIS_GAME_LIMIT,
 )
 from utils import ts
 
@@ -44,16 +47,30 @@ NUM_WORKERS    = 16
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def classify(centipawn_loss: int) -> str | None:
-    if centipawn_loss >= MISS_THRESHOLD:
-        return "miss"
-    elif centipawn_loss >= BLUNDER_THRESHOLD:
+def classify(cp_loss: int, eval_before_white: int, player_color: str) -> str | None:
+    player_eval = eval_before_white if player_color == "white" else -eval_before_white
+    if cp_loss >= MISS_THRESHOLD:
+        if abs(player_eval) <= MISS_CONTESTED_GATE:
+            return "miss"
+    if cp_loss >= BLUNDER_THRESHOLD:
         return "blunder"
-    elif centipawn_loss >= MISTAKE_THRESHOLD:
+    if cp_loss >= MISTAKE_THRESHOLD:
         return "mistake"
-    elif centipawn_loss >= INACCURACY_THRESHOLD:
+    if cp_loss >= INACCURACY_THRESHOLD:
         return "inaccuracy"
     return None
+
+
+def capture_pv_san(board: chess.Board, pv_moves: list, n: int = 5) -> str | None:
+    san_list = []
+    b = board.copy()
+    for move in pv_moves[:n]:
+        try:
+            san_list.append(b.san(move))
+            b.push(move)
+        except Exception:
+            break
+    return " ".join(san_list) if san_list else None
 
 
 def get_phase(ply: int, board: chess.Board) -> str:
@@ -118,8 +135,10 @@ def analyze_and_save_game(game_dict: dict) -> dict:
 
             info_before   = engine.analyse(board, chess.engine.Limit(depth=STOCKFISH_DEPTH))
             score_before  = info_before["score"].white().score(mate_score=10000)
-            best_move     = info_before.get("pv", [None])[0]
-            best_move_san = board.san(best_move) if best_move else None
+            pv            = info_before.get("pv", [])
+            best_move_obj = pv[0] if pv else None
+            best_move_san = board.san(best_move_obj) if best_move_obj else None
+            best_line     = capture_pv_san(board, pv, n=5)
 
             board.push(move)
 
@@ -138,7 +157,11 @@ def analyze_and_save_game(game_dict: dict) -> dict:
             if not is_player_move:
                 continue
 
-            classification = classify(cp_loss)
+            if best_move_san and san == best_move_san:
+                continue
+
+            cp             = max(0, cp_loss)
+            classification = classify(cp, score_before, player_color)
             if classification is None:
                 continue
 
@@ -150,9 +173,10 @@ def analyze_and_save_game(game_dict: dict) -> dict:
             blunders.append((
                 game_id,
                 ply, phase, fen,
-                san, best_move_san,
-                max(0, cp_loss), classification,
+                san, best_move_san, best_line,
+                cp, classification,
                 opening_eco,
+                STOCKFISH_VERSION, STOCKFISH_DEPTH,
             ))
 
         engine.quit()
@@ -164,17 +188,21 @@ def analyze_and_save_game(game_dict: dict) -> dict:
             for b in blunders:
                 cur.execute("""
                     INSERT INTO blunders
-                        (game_id, ply, phase, fen, move_played, best_move,
-                         centipawn_loss, classification, opening_eco)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        (game_id, ply, phase, fen, move_played, best_move, best_line,
+                         centipawn_loss, classification, opening_eco,
+                         engine_version, analysis_depth)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (game_id, ply) DO UPDATE SET
                         phase          = EXCLUDED.phase,
                         fen            = EXCLUDED.fen,
                         move_played    = EXCLUDED.move_played,
                         best_move      = EXCLUDED.best_move,
+                        best_line      = EXCLUDED.best_line,
                         centipawn_loss = EXCLUDED.centipawn_loss,
                         classification = EXCLUDED.classification,
-                        opening_eco    = EXCLUDED.opening_eco
+                        opening_eco    = EXCLUDED.opening_eco,
+                        engine_version = EXCLUDED.engine_version,
+                        analysis_depth = EXCLUDED.analysis_depth
                     RETURNING (xmax = 0) AS was_inserted
                 """, b)
                 row = cur.fetchone()
@@ -183,7 +211,13 @@ def analyze_and_save_game(game_dict: dict) -> dict:
                 else:
                     updated += 1
 
-            cur.execute("UPDATE games SET stockfish_analyzed = TRUE WHERE id = %s", (game_id,))
+            cur.execute("""
+                UPDATE games
+                SET stockfish_analyzed = TRUE,
+                    analysis_engine    = %s,
+                    analysis_depth     = %s
+                WHERE id = %s
+            """, (STOCKFISH_VERSION, STOCKFISH_DEPTH, game_id))
         conn.commit()
         conn.close()
 
@@ -197,9 +231,11 @@ def analyze_and_save_game(game_dict: dict) -> dict:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run",    action="store_true", help="Actually run (default is dry run)")
-    parser.add_argument("--player", type=str, default=None, help="Filter to one player (case-insensitive)")
-    parser.add_argument("--days",   type=int, default=None, help="Only reanalyze games from the last N days")
+    parser.add_argument("--run",       action="store_true", help="Actually run (default is dry run)")
+    parser.add_argument("--player",    type=str, default=None, help="Filter to one player by name (case-insensitive)")
+    parser.add_argument("--player-id", type=int, default=None, help="Filter to one player by ID (used by Fargate worker)")
+    parser.add_argument("--days",      type=int, default=None, help="Only reanalyze games from the last N days")
+    parser.add_argument("--workers",   type=int, default=NUM_WORKERS, help=f"Parallel workers (default {NUM_WORKERS})")
     args = parser.parse_args()
 
     dry_run = not args.run
@@ -226,12 +262,21 @@ def main():
     conn = get_conn()
     players = get_all_active_players(conn)
 
+    if args.player_id:
+        players = [p for p in players if p["id"] == args.player_id]
+        if not players:
+            print(f"[{ts()}] No player with ID {args.player_id} found.")
+            conn.close()
+            return
+
     if args.player:
         players = [p for p in players if args.player.lower() in p["user_display_name"].lower()]
         if not players:
             print(f"[{ts()}] No player matching '{args.player}' found.")
             conn.close()
             return
+
+    num_workers = args.workers
 
     print(f"[{ts()}] Players: {[p['user_display_name'] for p in players]}")
 
@@ -246,7 +291,7 @@ def main():
         print(f"\n[{ts()}] Processing {player['user_display_name']}...")
         games      = get_all_games_for_player(conn, player["id"], since=since)
         game_dicts = [dict(g) for g in games]
-        print(f"[{ts()}] {len(game_dicts)} games to reanalyze with {NUM_WORKERS} workers")
+        print(f"[{ts()}] {len(game_dicts)} games to reanalyze with {num_workers} workers")
 
         if not game_dicts:
             print(f"[{ts()}] Nothing to do.")
@@ -267,7 +312,7 @@ def main():
         total_updated  = 0
         start_time     = time.time()
 
-        with Pool(processes=NUM_WORKERS) as pool:
+        with Pool(processes=num_workers) as pool:
             for result in pool.imap_unordered(analyze_and_save_game, game_dicts):
                 done += 1
 
