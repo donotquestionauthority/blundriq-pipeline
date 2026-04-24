@@ -2,7 +2,7 @@
 fast_pass.py — Phase 1 onboarding analysis.
 
 Analyzes the last ANALYSIS_GAME_LIMIT games for a single player at FAST_PASS_DEPTH
-using parallel workers. Designed to complete in ~2-3 minutes on Fargate (4 vCPU).
+using parallel workers. Designed to complete in ~5 minutes on Fargate (16 vCPU).
 
 On completion, sets players.fast_pass_complete = TRUE.
 Deep pass (analyze_blunders.py at full depth) runs after and overwrites results
@@ -42,7 +42,7 @@ from utils import ts
 
 # Set by main() before Pool — inherited by workers via fork
 _STOCKFISH_PATH = None
-NUM_WORKERS     = 8   # conservative default for Fargate 4 vCPU
+NUM_WORKERS     = 16  # Fargate 16 vCPU
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
