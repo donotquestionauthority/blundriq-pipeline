@@ -264,6 +264,8 @@ def main():
     print(f"[{ts()}] Depth:   {STOCKFISH_DEPTH}")
     print(f"[{ts()}] Workers: {num_workers}")
 
+    conn = get_conn()
+
     # When called from Fargate with --player-id, fetch the player directly
     # without requiring is_initialized = TRUE (used during onboarding deep pass)
     if args.player_id:
