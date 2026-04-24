@@ -1,0 +1,12 @@
+# BlundrIQ pipeline — Fargate container dependencies
+# Generated from blundriq-pipeline virtualenv, trimmed to pipeline-only deps.
+# Do not add loose deps — always pip install <pkg> && pip freeze in the venv.
+
+certifi==2026.2.25
+charset-normalizer==3.4.7
+chess==1.11.2
+idna==3.11
+psycopg2-binary==2.9.11
+python-dotenv==1.2.2
+requests==2.33.1
+urllib3==2.6.3
