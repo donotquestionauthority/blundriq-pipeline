@@ -86,7 +86,7 @@ def get_phase(ply: int, board: chess.Board) -> str:
     return "middlegame"
 
 
-def get_all_games_for_player(conn, player_id: int, since=None) -> list:
+def get_all_games_for_player(conn, player_id: int, since=None, limit: int = None) -> list:
     with conn.cursor() as cur:
         query  = """
             SELECT g.id, g.moves, g.opening_eco, g.player_color, g.played_at
@@ -98,6 +98,9 @@ def get_all_games_for_player(conn, player_id: int, since=None) -> list:
             query += " AND g.played_at >= %s"
             params.append(since)
         query += " ORDER BY g.played_at DESC"
+        if limit:
+            query += " LIMIT %s"
+            params.append(limit)
         cur.execute(query, params)
         return cur.fetchall()
 
@@ -260,14 +263,25 @@ def main():
     print(f"[{ts()}] Workers: {NUM_WORKERS}")
 
     conn = get_conn()
-    players = get_all_active_players(conn)
 
+    # When called from Fargate with --player-id, fetch the player directly
+    # without requiring is_initialized = TRUE (used during onboarding deep pass)
     if args.player_id:
-        players = [p for p in players if p["id"] == args.player_id]
-        if not players:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT p.*, u.email, u.display_name as user_display_name
+                FROM players p
+                JOIN users u ON u.id = p.user_id
+                WHERE p.id = %s AND p.active = TRUE AND u.active = TRUE
+            """, (args.player_id,))
+            row = cur.fetchone()
+        if not row:
             print(f"[{ts()}] No player with ID {args.player_id} found.")
             conn.close()
             return
+        players = [row]
+    else:
+        players = get_all_active_players(conn)
 
     if args.player:
         players = [p for p in players if args.player.lower() in p["user_display_name"].lower()]
@@ -282,14 +296,14 @@ def main():
 
     if dry_run:
         for player in players:
-            games = get_all_games_for_player(conn, player["id"], since=since)
+            games = get_all_games_for_player(conn, player["id"], since=since, limit=ANALYSIS_GAME_LIMIT)
             print(f"[{ts()}] {player['user_display_name']}: {len(games)} games would be reanalyzed")
         conn.close()
         return
 
     for player in players:
         print(f"\n[{ts()}] Processing {player['user_display_name']}...")
-        games      = get_all_games_for_player(conn, player["id"], since=since)
+        games      = get_all_games_for_player(conn, player["id"], since=since, limit=ANALYSIS_GAME_LIMIT)
         game_dicts = [dict(g) for g in games]
         print(f"[{ts()}] {len(game_dicts)} games to reanalyze with {num_workers} workers")
 
