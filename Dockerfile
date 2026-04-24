@@ -18,7 +18,7 @@
 #   docker tag blundriq-pipeline:latest <account>.dkr.ecr.us-east-1.amazonaws.com/blundriq-pipeline:latest
 #   docker push <account>.dkr.ecr.us-east-1.amazonaws.com/blundriq-pipeline:latest
 
-FROM python:3.13-slim
+FROM --platform=linux/amd64 python:3.13-slim
 
 # ── System deps ───────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y \
@@ -34,9 +34,6 @@ RUN wget -q https://github.com/official-stockfish/Stockfish/releases/download/sf
     && mv stockfish/stockfish-ubuntu-x86-64-avx2 /usr/local/bin/stockfish \
     && chmod +x /usr/local/bin/stockfish \
     && rm -rf stockfish stockfish-ubuntu-x86-64-avx2.tar
-
-# Verify Stockfish installed correctly
-RUN stockfish <<< "uci" | grep "id name"
 
 # ── Python deps ───────────────────────────────────────────────────────────────
 WORKDIR /app

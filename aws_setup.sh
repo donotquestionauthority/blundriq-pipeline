@@ -12,7 +12,7 @@
 # Takes ~15-20 minutes. Safe to re-run — all commands are idempotent.
 #
 # What this creates:
-#   Secrets Manager (3) — DATABASE_URL, SUPABASE_URL, SUPABASE_KEY (~$0.12/mo each)
+#   SSM Parameters (3)  — DATABASE_URL, SUPABASE_URL, SUPABASE_KEY ($0/mo free tier)
 #   ECR repo            — stores Docker image (~$0.01/mo)
 #   SQS queues (2)      — fast-pass and deep-pass job queues ($0)
 #   IAM roles (3)       — exec role, task role, pipe role
@@ -21,8 +21,8 @@
 #   ECS task def        — blundriq-pipeline (4 vCPU / 8GB)
 #   EventBridge Pipes   — SQS -> ECS trigger, one per queue ($0 at rest)
 #
-# Secrets are stored in Secrets Manager and injected at runtime — they never
-# appear in the task definition, CloudWatch logs, or ECS console.
+# Credentials are stored in SSM Parameter Store (SecureString, free tier) and
+# injected at runtime — they never appear in the task definition or ECS console.
 #
 # Nothing here runs compute until the API enqueues a job.
 # Set a $5 billing alert in AWS console after running this.
@@ -42,10 +42,10 @@ EXEC_ROLE="blundriq-pipeline-exec"
 PIPE_ROLE="blundriq-pipe"
 API_USER="blundriq-render-api"
 
-# Secrets Manager secret names
-SECRET_DB="blundriq/DATABASE_URL"
-SECRET_SUPA_URL="blundriq/SUPABASE_URL"
-SECRET_SUPA_KEY="blundriq/SUPABASE_KEY"
+# SSM parameter names
+PARAM_DB="/blundriq/DATABASE_URL"
+PARAM_SUPA_URL="/blundriq/SUPABASE_URL"
+PARAM_SUPA_KEY="/blundriq/SUPABASE_KEY"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "BlundrIQ Fargate Setup"
@@ -60,39 +60,33 @@ if [ -z "$DATABASE_URL" ]; then
     exit 1
 fi
 
-# ── 1. Secrets Manager ────────────────────────────────────────────────────────
+# ── 1. SSM Parameter Store ────────────────────────────────────────────────────
+# SecureString type — encrypted at rest using AWS managed key (free tier).
+# ECS injects these as environment variables at container startup via valueFrom.
 echo ""
-echo "▶ 1/11  Secrets Manager"
+echo "▶ 1/11  SSM Parameter Store"
 
-store_secret() {
-    local secret_name=$1
-    local secret_value=$2
-
-    if aws secretsmanager describe-secret --secret-id "$secret_name" \
-        --region $AWS_REGION > /dev/null 2>&1; then
-        # Secret exists — update value in case it changed
-        aws secretsmanager put-secret-value \
-            --secret-id "$secret_name" \
-            --secret-string "$secret_value" \
-            --region $AWS_REGION > /dev/null
-        echo "   updated: $secret_name"
-    else
-        aws secretsmanager create-secret \
-            --name "$secret_name" \
-            --secret-string "$secret_value" \
-            --region $AWS_REGION > /dev/null
-        echo "   created: $secret_name"
-    fi
+store_param() {
+    local name=$1
+    local value=$2
+    # put-parameter with --overwrite handles both create and update
+    aws ssm put-parameter \
+        --name "$name" \
+        --value "$value" \
+        --type SecureString \
+        --overwrite \
+        --region $AWS_REGION > /dev/null
+    echo "   stored: $name"
 }
 
-store_secret "$SECRET_DB"       "$DATABASE_URL"
-store_secret "$SECRET_SUPA_URL" "${SUPABASE_URL:-}"
-store_secret "$SECRET_SUPA_KEY" "${SUPABASE_KEY:-}"
+store_param "$PARAM_DB"       "$DATABASE_URL"
+store_param "$PARAM_SUPA_URL" "${SUPABASE_URL:-}"
+store_param "$PARAM_SUPA_KEY" "${SUPABASE_KEY:-}"
 
-# Build ARNs for use in task definition and IAM policy
-SECRET_DB_ARN="arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT:secret:$SECRET_DB"
-SECRET_SUPA_URL_ARN="arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT:secret:$SECRET_SUPA_URL"
-SECRET_SUPA_KEY_ARN="arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT:secret:$SECRET_SUPA_KEY"
+# Build ARNs for IAM policy and task definition
+PARAM_DB_ARN="arn:aws:ssm:$AWS_REGION:$AWS_ACCOUNT:parameter$PARAM_DB"
+PARAM_SUPA_URL_ARN="arn:aws:ssm:$AWS_REGION:$AWS_ACCOUNT:parameter$PARAM_SUPA_URL"
+PARAM_SUPA_KEY_ARN="arn:aws:ssm:$AWS_REGION:$AWS_ACCOUNT:parameter$PARAM_SUPA_KEY"
 
 # ── 2. ECR repo ───────────────────────────────────────────────────────────────
 echo ""
@@ -121,8 +115,6 @@ echo "   pushed: $ECR_URI:latest"
 echo ""
 echo "▶ 4/11  SQS queues"
 
-# VisibilityTimeout=21600 = 6 hours — long enough for a deep pass to complete
-# without another worker picking up the same message
 get_or_create_queue() {
     local name=$1
     local url
@@ -150,7 +142,7 @@ echo "   fast-pass: $FAST_QUEUE_URL"
 echo "   deep-pass: $DEEP_QUEUE_URL"
 
 # ── 5. IAM — execution role ───────────────────────────────────────────────────
-# Pulls ECR image, writes CloudWatch logs, reads Secrets Manager at task start
+# Pulls ECR image, writes CloudWatch logs, reads SSM parameters at task start
 echo ""
 echo "▶ 5/11  IAM execution role"
 EXEC_ROLE_ARN="arn:aws:iam::$AWS_ACCOUNT:role/$EXEC_ROLE"
@@ -168,24 +160,29 @@ aws iam attach-role-policy \
     --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy \
     2>/dev/null || true
 
-# Grant execution role access to read the three secrets
-# This is what allows ECS to inject secrets as env vars at container startup
+# Grant execution role access to read the three SSM parameters
+# Also needs kms:Decrypt for SecureString parameters using AWS managed key
 aws iam put-role-policy \
     --role-name $EXEC_ROLE \
-    --policy-name blundriq-secrets-read \
+    --policy-name blundriq-ssm-read \
     --policy-document "{
         \"Version\":\"2012-10-17\",
-        \"Statement\":[{
-            \"Effect\":\"Allow\",
-            \"Action\":[
-                \"secretsmanager:GetSecretValue\"
-            ],
-            \"Resource\":[
-                \"$SECRET_DB_ARN*\",
-                \"$SECRET_SUPA_URL_ARN*\",
-                \"$SECRET_SUPA_KEY_ARN*\"
-            ]
-        }]
+        \"Statement\":[
+            {
+                \"Effect\":\"Allow\",
+                \"Action\":[\"ssm:GetParameters\"],
+                \"Resource\":[
+                    \"$PARAM_DB_ARN\",
+                    \"$PARAM_SUPA_URL_ARN\",
+                    \"$PARAM_SUPA_KEY_ARN\"
+                ]
+            },
+            {
+                \"Effect\":\"Allow\",
+                \"Action\":[\"kms:Decrypt\"],
+                \"Resource\":\"arn:aws:kms:$AWS_REGION:$AWS_ACCOUNT:key/aws/ssm\"
+            }
+        ]
     }" > /dev/null
 echo "   $EXEC_ROLE"
 
@@ -302,9 +299,8 @@ echo "   Subnets:        $SUBNET_1, $SUBNET_2"
 echo "   Security group: $DEFAULT_SG"
 
 # ── 10. ECS task definition ───────────────────────────────────────────────────
-# Secrets are injected via valueFrom — ECS fetches them from Secrets Manager
-# at container startup. They appear as normal env vars inside the container
-# but are never stored in the task definition or visible in the ECS console.
+# Secrets injected via valueFrom — ECS fetches from SSM at container startup.
+# Values never stored in task definition or visible in ECS console.
 echo ""
 echo "▶ 10/11  ECS task definition"
 TASK_DEF_ARN=$(aws ecs register-task-definition \
@@ -327,9 +323,9 @@ TASK_DEF_ARN=$(aws ecs register-task-definition \
                 {\"name\": \"WORKERS\", \"value\": \"8\"}
             ],
             \"secrets\": [
-                {\"name\": \"DATABASE_URL\",  \"valueFrom\": \"$SECRET_DB_ARN\"},
-                {\"name\": \"SUPABASE_URL\",  \"valueFrom\": \"$SECRET_SUPA_URL_ARN\"},
-                {\"name\": \"SUPABASE_KEY\",  \"valueFrom\": \"$SECRET_SUPA_KEY_ARN\"}
+                {\"name\": \"DATABASE_URL\",  \"valueFrom\": \"$PARAM_DB_ARN\"},
+                {\"name\": \"SUPABASE_URL\",  \"valueFrom\": \"$PARAM_SUPA_URL_ARN\"},
+                {\"name\": \"SUPABASE_KEY\",  \"valueFrom\": \"$PARAM_SUPA_KEY_ARN\"}
             ],
             \"logConfiguration\": {
                 \"logDriver\": \"awslogs\",
@@ -372,8 +368,8 @@ create_or_update_pipe() {
             "ContainerOverrides": [{
                 "Name": "pipeline",
                 "Environment": [
-                    {"Name": "JOB_TYPE",  "Value": "$JOB_TYPE"},
-                    {"Name": "PLAYER_ID", "Value": "<$.body.player_id>"}
+                    {"name": "JOB_TYPE",  "value": "$JOB_TYPE"},
+                    {"name": "PLAYER_ID", "value": "<$.body.player_id>"}
                 ]
             }]
         }
@@ -455,10 +451,10 @@ echo "  AWS_ACCESS_KEY_ID=<from table above>"
 echo "  AWS_SECRET_ACCESS_KEY=<from table above>"
 echo ""
 echo "Verify in AWS console before doing anything else:"
-echo "  Secrets Manager -> blundriq/DATABASE_URL, SUPABASE_URL, SUPABASE_KEY"
-echo "  ECS             -> clusters -> $ECS_CLUSTER (no running tasks)"
-echo "  SQS             -> $SQS_FAST, $SQS_DEEP (both empty)"
-echo "  Pipes           -> blundriq-fast-pass-pipe, blundriq-deep-pass-pipe (RUNNING)"
-echo "  IAM users       -> $API_USER (one access key, send-only policy)"
-echo "  Billing         -> Budgets -> create a \$5 alert"
+echo "  SSM Parameter Store -> /blundriq/DATABASE_URL, SUPABASE_URL, SUPABASE_KEY"
+echo "  ECS                 -> clusters -> $ECS_CLUSTER (no running tasks)"
+echo "  SQS                 -> $SQS_FAST, $SQS_DEEP (both empty)"
+echo "  Pipes               -> blundriq-fast-pass-pipe, blundriq-deep-pass-pipe (RUNNING)"
+echo "  IAM users           -> $API_USER (one access key, send-only policy)"
+echo "  Billing             -> Budgets -> create a \$5 alert"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
