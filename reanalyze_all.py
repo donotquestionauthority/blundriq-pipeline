@@ -258,11 +258,11 @@ def main():
     version_line = next(
         (l for l in result.stdout.splitlines() if l.startswith("id name")), "unknown"
     )
+    num_workers = args.workers
+
     print(f"[{ts()}] Engine:  {version_line.replace('id name ', '')}")
     print(f"[{ts()}] Depth:   {STOCKFISH_DEPTH}")
-    print(f"[{ts()}] Workers: {NUM_WORKERS}")
-
-    conn = get_conn()
+    print(f"[{ts()}] Workers: {num_workers}")
 
     # When called from Fargate with --player-id, fetch the player directly
     # without requiring is_initialized = TRUE (used during onboarding deep pass)
@@ -289,8 +289,6 @@ def main():
             print(f"[{ts()}] No player matching '{args.player}' found.")
             conn.close()
             return
-
-    num_workers = args.workers
 
     print(f"[{ts()}] Players: {[p['user_display_name'] for p in players]}")
 
