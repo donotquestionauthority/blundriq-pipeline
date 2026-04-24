@@ -208,4 +208,5 @@ __marimo__/
 
 # Local output files (scratch/debug dumps)
 output*
-.python-versionspot_check.py
+.python-version
+spot_check.py

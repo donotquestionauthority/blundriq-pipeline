@@ -57,7 +57,7 @@ def cleanup_analysis_beyond_limit(conn) -> tuple[int, int]:
                 ) ranked
                 WHERE rn <= %s
             )
-            AND (analysis_engine IS NOT NULL OR analysis_depth IS NOT NULL)
+            AND (analysis_engine IS NOT NULL OR analysis_depth IS NOT NULL OR stockfish_analyzed = TRUE)
         """, (ANALYSIS_GAME_LIMIT,))
         aged_out_ids = [row["id"] for row in cur.fetchall()]
 
