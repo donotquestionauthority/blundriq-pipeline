@@ -9,10 +9,14 @@ dispatch. If the job exceeds the ceiling the process exits with code 2.
 The AWS-side watchdog (blundriq_ecs_watchdog Lambda) provides a second,
 independent kill at 5 hours in case the signal never fires.
 
+All job outcomes (completed, timed_out, failed) are recorded in pipeline_runs
+so the admin UI and future job visibility tooling have a durable trace.
+
 Exit codes:
     0  — success
     1  — bad environment / unknown job type
     2  — job timed out
+    3  — unexpected exception during job
 
 Environment variables:
     JOB_TYPE          — "onboarding_pass", "fast_pass", or "deep_pass" (required)
@@ -27,6 +31,7 @@ Environment variables:
 import os
 import signal
 import sys
+import traceback
 
 # ---------------------------------------------------------------------------
 # Timeout
@@ -66,6 +71,50 @@ def _cancel_timeout() -> None:
 
 
 # ---------------------------------------------------------------------------
+# pipeline_runs helpers
+# ---------------------------------------------------------------------------
+
+def _start_run(job_type: str, player_id: int):
+    """
+    Insert a pipeline_runs row with status='running' and return (conn, run_id).
+    Returns (None, None) on DB failure — logging must never crash the job itself.
+    """
+    try:
+        from db import get_conn, log_pipeline_run
+        conn = get_conn()
+        # Store job context in error_message on the initial insert so it's
+        # visible even if the job crashes before _finish_run is called.
+        run_id = log_pipeline_run(
+            conn,
+            status="running",
+            error_message=f"job_type={job_type} player_id={player_id}",
+        )
+        return conn, run_id
+    except Exception as e:
+        print(f"[worker] WARNING: could not write pipeline_run start record: {e}")
+        return None, None
+
+
+def _finish_run(conn, run_id, status: str, error_message=None):
+    """
+    Update the pipeline_runs row to its final status.
+    Silently swallowed on failure — never allowed to mask the real outcome.
+    """
+    if conn is None or run_id is None:
+        return
+    try:
+        from db import log_pipeline_run
+        log_pipeline_run(conn, status=status, error_message=error_message, run_id=run_id)
+        conn.close()
+    except Exception as e:
+        print(f"[worker] WARNING: could not write pipeline_run finish record: {e}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -99,13 +148,17 @@ def main():
 
     _install_timeout(timeout_hours)
 
+    # Open a pipeline_runs row before dispatch so there's always a durable
+    # trace, even if the job crashes before writing anything itself.
+    run_conn, run_id = _start_run(job_type, player_id)
+
+    exit_code = 0
     try:
         if job_type == "onboarding_pass":
             argv = ["onboarding_pass.py", "--player-id", str(player_id)]
             if workers:
                 argv += ["--workers", workers]
             sys.argv = argv
-
             from onboarding_pass import main as run
             run()
 
@@ -114,7 +167,6 @@ def main():
             if workers:
                 argv += ["--workers", workers]
             sys.argv = argv
-
             from fast_pass import main as run
             run()
 
@@ -123,23 +175,41 @@ def main():
             if workers:
                 argv += ["--workers", workers]
             sys.argv = argv
-
             from deep_pass import main as run
             run()
 
         else:
             print(f"ERROR: Unknown JOB_TYPE: {job_type!r}. Expected 'onboarding_pass', 'fast_pass', or 'deep_pass'")
+            _finish_run(run_conn, run_id, "failed", f"unknown job_type={job_type!r}")
             sys.exit(1)
 
+        # Clean finish — clear the placeholder error_message set at start
+        _finish_run(run_conn, run_id, "completed",
+                    error_message=f"job_type={job_type} player_id={player_id}")
+
     except JobTimeoutError:
-        print(
-            f"[worker] TIMEOUT: {job_type} for player_id={player_id} exceeded "
-            f"{timeout_hours:.1f}h ceiling — exiting with code 2"
+        msg = (
+            f"job_type={job_type} player_id={player_id} "
+            f"exceeded {timeout_hours:.1f}h ceiling"
         )
-        sys.exit(2)
+        print(f"[worker] TIMEOUT: {msg} — exiting with code 2")
+        _finish_run(run_conn, run_id, "timed_out", msg)
+        exit_code = 2
+
+    except Exception:
+        msg = (
+            f"job_type={job_type} player_id={player_id} "
+            f"unexpected error: {traceback.format_exc()}"
+        )
+        print(f"[worker] ERROR: {msg}")
+        _finish_run(run_conn, run_id, "failed", msg[:2000])  # guard against oversized tracebacks
+        exit_code = 3
 
     finally:
         _cancel_timeout()
+
+    if exit_code:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":
