@@ -13,16 +13,22 @@ def get_conn():
 
 
 def get_all_active_players(conn):
-    """Returns all active, approved, initialized player records."""
+    """
+    Returns players eligible for the hourly pipeline:
+    - paid subscribers with fast pass complete (incremental import + analysis)
+    Excludes free/trial users and cancelled subscribers.
+    """
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT p.*, u.email, u.display_name as user_display_name
+            SELECT p.*, u.email, u.display_name as user_display_name,
+                   u.is_paid
             FROM players p
             JOIN users u ON u.id = p.user_id
             WHERE p.active = TRUE
               AND u.active = TRUE
               AND u.registration_approved = TRUE
-              AND p.is_initialized = TRUE
+              AND u.is_paid = TRUE
+              AND p.fast_pass_complete = TRUE
         """)
         return cur.fetchall()
 

@@ -110,18 +110,24 @@ def filter_recent_archives(archives: list, months: int) -> list:
             filtered.append(url)
     return filtered
 
-def import_chesscom_games(conn, player: dict, months: int = None):
+def import_chesscom_games(conn, player: dict, months: int = None, game_limit: int = None):
     username = player["chesscom_username"]
     if not username:
         print(f"[{ts()}] Player {player['user_display_name']} has no Chess.com username, skipping.")
         return 0
 
+    # all_history=True fetches all archives regardless of months cutoff
+    all_history = (game_limit is None)
     if months is None:
         months = INITIAL_IMPORT_MONTHS
 
     print(f"[{ts()}] Fetching Chess.com games for {username}...")
     archives = get_archives(username)
-    archives = filter_recent_archives(archives, months)
+    if not all_history:
+        archives = filter_recent_archives(archives, months)
+    else:
+        # Sort newest-first so we fill the cap with most recent games
+        archives = sorted(archives, reverse=True)
     print(f"[{ts()}] Found {len(archives)} archive(s) to process.")
 
     inserted = 0
@@ -134,6 +140,9 @@ def import_chesscom_games(conn, player: dict, months: int = None):
         latest = row["max"] if row and row["max"] else None
 
     for archive_url in archives:
+        if game_limit is not None and inserted >= game_limit:
+            print(f"[{ts()}] Game limit of {game_limit} reached, stopping import.")
+            break
         try:
             games = get_games_from_archive(archive_url)
         except Exception as e:
@@ -141,6 +150,8 @@ def import_chesscom_games(conn, player: dict, months: int = None):
             continue
 
         for game in games:
+            if game_limit is not None and inserted >= game_limit:
+                break
             if game.get("rules") != "chess":
                 continue
             pgn = game.get("pgn", "")

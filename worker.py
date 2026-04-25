@@ -38,7 +38,16 @@ def main():
 
     print(f"[worker] JOB_TYPE={job_type} PLAYER_ID={player_id}")
 
-    if job_type == "fast_pass":
+    if job_type == "onboarding_pass":
+        argv = ["onboarding_pass.py", "--player-id", str(player_id)]
+        if workers:
+            argv += ["--workers", workers]
+        sys.argv = argv
+
+        from onboarding_pass import main as run
+        run()
+
+    elif job_type == "fast_pass":
         # Patch sys.argv so fast_pass.py's argparse sees the right args
         argv = ["fast_pass.py", "--player-id", str(player_id)]
         if workers:
@@ -58,7 +67,7 @@ def main():
         run()
 
     else:
-        print(f"ERROR: Unknown JOB_TYPE: {job_type!r}. Expected 'fast_pass' or 'deep_pass'")
+        print(f"ERROR: Unknown JOB_TYPE: {job_type!r}. Expected 'onboarding_pass', 'fast_pass', or 'deep_pass'")
         sys.exit(1)
 
 

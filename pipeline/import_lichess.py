@@ -94,13 +94,14 @@ def get_cutoff_timestamp(conn, player_id: int) -> int:
     cutoff = datetime.now(timezone.utc) - relativedelta(months=INITIAL_IMPORT_MONTHS)
     return int(cutoff.timestamp() * 1000)
 
-def import_lichess_games(conn, player: dict):
+def import_lichess_games(conn, player: dict, since_ms: int = None, game_limit: int = None):
     username = player["lichess_username"]
     if not username:
         print(f"[{ts()}] Player {player['user_display_name']} has no Lichess username, skipping.")
         return 0
 
-    since = get_cutoff_timestamp(conn, player["id"])
+    # Allow caller to override since timestamp (0 = all games ever, None = incremental)
+    since = since_ms if since_ms is not None else get_cutoff_timestamp(conn, player["id"])
     print(f"[{ts()}] Fetching Lichess games for {username} since {datetime.fromtimestamp(since/1000)}...")
 
     url = f"{LICHESS_API}/games/user/{username}"
@@ -118,6 +119,9 @@ def import_lichess_games(conn, player: dict):
 
     inserted = 0
     for line in r.iter_lines():
+        if game_limit is not None and inserted >= game_limit:
+            print(f"[{ts()}] Game limit of {game_limit} reached, stopping Lichess import.")
+            break
         if not line:
             continue
         try:
