@@ -113,24 +113,22 @@ def main():
 
     # ── Step 2: Match repertoire ───────────────────────────────────────────────
     print(f"[{ts()}] === Step 2: Match repertoire ===")
-    from pipeline.match_repertoire import main as run_match
-    sys.argv = ["match_repertoire.py"]
     conn = get_conn()
     from pipeline.match_repertoire import get_unmatched_games, mark_no_match
-    from pipeline.matching import match_game
+    from pipeline.matching import compute_matches, insert_results
     from db import get_active_lines_for_player
 
     unmatched = get_unmatched_games(conn, player_id)
     print(f"[{ts()}] {len(unmatched)} unmatched games to process")
-    lines = get_active_lines_for_player(conn, player_id)
-    no_match_ids = []
-    for game in unmatched:
-        result = match_game(conn, game, lines)
-        if not result:
-            no_match_ids.append(game["id"])
-    if no_match_ids:
-        mark_no_match(conn, no_match_ids)
-    conn.commit()
+    if unmatched:
+        lines = get_active_lines_for_player(conn, player_id)
+        result_rows, lines_by_game_id = compute_matches(unmatched, lines)
+        no_match_ids = [g["id"] for g in unmatched if g["id"] not in lines_by_game_id]
+        if result_rows:
+            insert_results(conn, result_rows, lines_by_game_id)
+        if no_match_ids:
+            mark_no_match(conn, no_match_ids)
+        conn.commit()
     conn.close()
     print(f"[{ts()}] Repertoire matching complete")
 
