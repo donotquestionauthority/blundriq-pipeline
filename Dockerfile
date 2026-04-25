@@ -42,13 +42,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Pipeline code ─────────────────────────────────────────────────────────────
 # Copy only what the pipeline needs — not research scripts, not UI, not API
-COPY config.py        ./config.py
-COPY db.py            ./db.py
-COPY utils.py         ./utils.py
-COPY fast_pass.py     ./fast_pass.py
-COPY deep_pass.py     ./deep_pass.py
-COPY worker.py        ./worker.py
-COPY pipeline/        ./pipeline/
+COPY config.py           ./config.py
+COPY db.py               ./db.py
+COPY utils.py            ./utils.py
+COPY fast_pass.py        ./fast_pass.py
+COPY deep_pass.py        ./deep_pass.py
+COPY onboarding_pass.py  ./onboarding_pass.py
+COPY worker.py           ./worker.py
+COPY pipeline/           ./pipeline/
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 # Environment variables required at runtime (injected by ECS task definition):
