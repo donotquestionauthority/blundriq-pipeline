@@ -294,6 +294,16 @@ def main():
             print(f"[{ts()}] Nothing to do.")
             continue
 
+        # Mark deep pass in-progress: clear both completion flags so admin UI
+        # shows accurate state while the job runs.
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE players SET deep_pass_complete = FALSE, is_initialized = FALSE WHERE id = %s",
+                (player["id"],),
+            )
+        conn.commit()
+        print(f"[{ts()}] deep_pass_complete=FALSE, is_initialized=FALSE for player {player['id']}")
+
         # Close the main connection before the Pool starts — it would sit idle
         # for 30+ minutes while workers run, causing Supabase to terminate it.
         # Each worker opens its own connection internally so this is safe.
@@ -337,6 +347,15 @@ def main():
             f"[{ts()}] Done {player['user_display_name']} in {elapsed_hrs:.2f} hrs — "
             f"{total_inserted} new blunders, {total_updated} updated in-place"
         )
+
+        # Mark deep pass complete — re-enables hourly pipeline for this player.
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE players SET deep_pass_complete = TRUE, is_initialized = TRUE WHERE id = %s",
+                (player["id"],),
+            )
+        conn.commit()
+        print(f"[{ts()}] deep_pass_complete=TRUE, is_initialized=TRUE for player {player['id']}")
 
     conn.close()
 
