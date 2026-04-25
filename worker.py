@@ -49,14 +49,12 @@ def main():
         run()
 
     elif job_type == "deep_pass":
-        # reanalyze_all.py handles all players by default;
-        # we always pass --player-id and --run for Fargate jobs
-        argv = ["reanalyze_all.py", "--run", "--player-id", str(player_id)]
+        argv = ["deep_pass.py", "--run", "--player-id", str(player_id)]
         if workers:
             argv += ["--workers", workers]
         sys.argv = argv
 
-        from reanalyze_all import main as run
+        from deep_pass import main as run
         run()
 
     else:

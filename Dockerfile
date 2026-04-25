@@ -46,7 +46,7 @@ COPY config.py        ./config.py
 COPY db.py            ./db.py
 COPY utils.py         ./utils.py
 COPY fast_pass.py     ./fast_pass.py
-COPY reanalyze_all.py ./reanalyze_all.py
+COPY deep_pass.py     ./deep_pass.py
 COPY worker.py        ./worker.py
 COPY pipeline/        ./pipeline/
 

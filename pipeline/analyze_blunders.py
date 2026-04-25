@@ -166,26 +166,18 @@ def analyze_game(engine, game: dict, player_color: str) -> list:
     return blunders
 
 def insert_blunders(conn, game_id: int, blunders: list):
-    if not blunders:
-        return
     with conn.cursor() as cur:
+        # Delete existing blunders first — ensures stale rows from prior analyses
+        # or threshold changes are never left behind
+        cur.execute("DELETE FROM blunders WHERE game_id = %s", (game_id,))
+        if not blunders:
+            return
         cur.executemany("""
             INSERT INTO blunders
                 (game_id, ply, phase, fen, move_played, best_move, best_line,
                  centipawn_loss, classification, opening_eco,
                  engine_version, analysis_depth)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (game_id, ply) DO UPDATE SET
-                phase          = EXCLUDED.phase,
-                fen            = EXCLUDED.fen,
-                move_played    = EXCLUDED.move_played,
-                best_move      = EXCLUDED.best_move,
-                best_line      = EXCLUDED.best_line,
-                centipawn_loss = EXCLUDED.centipawn_loss,
-                classification = EXCLUDED.classification,
-                opening_eco    = EXCLUDED.opening_eco,
-                engine_version = EXCLUDED.engine_version,
-                analysis_depth = EXCLUDED.analysis_depth
         """, [
             (
                 game_id,

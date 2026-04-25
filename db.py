@@ -54,15 +54,22 @@ def get_active_lines_for_player(conn, player_id: int):
 
 
 def get_unanalyzed_games_for_player(conn, player_id: int):
-    """Returns unanalyzed games for a specific player, newest first."""
+    """Returns unanalyzed games within the analysis window for a player, newest first."""
+    from config import ANALYSIS_GAME_LIMIT
     with conn.cursor() as cur:
         cur.execute("""
             SELECT g.*
-            FROM   games g
-            WHERE  g.player_id = %s
-              AND  g.stockfish_analyzed = FALSE
+            FROM games g
+            WHERE g.player_id = %s
+              AND g.stockfish_analyzed = FALSE
+              AND g.id IN (
+                  SELECT id FROM games
+                  WHERE player_id = %s
+                  ORDER BY played_at DESC
+                  LIMIT %s
+              )
             ORDER BY g.played_at DESC
-        """, (player_id,))
+        """, (player_id, player_id, ANALYSIS_GAME_LIMIT))
         return cur.fetchall()
 
 
