@@ -238,12 +238,12 @@ def main():
     )
     num_workers = args.workers
 
+    conn      = get_conn()
+    _SETTINGS = get_app_settings(conn)
+
     print(f"[{ts()}] Engine:  {version_line.replace('id name ', '')}")
     print(f"[{ts()}] Depth:   {_SETTINGS['stockfish_depth']}")
     print(f"[{ts()}] Workers: {num_workers}")
-
-    conn      = get_conn()
-    _SETTINGS = get_app_settings(conn)
 
     # When called from Fargate with --player-id, fetch the player directly
     # without requiring is_initialized = TRUE (used during onboarding deep pass)
