@@ -1,12 +1,12 @@
 """
 fast_pass.py — Phase 1 onboarding analysis.
 
-Analyzes the last ANALYSIS_GAME_LIMIT games for a single player at FAST_PASS_DEPTH
-using parallel workers. Designed to complete in ~5 minutes on Fargate (16 vCPU).
+Analyzes the most recent games (up to analysis_game_limit) for a single player
+at fast_pass_depth using parallel workers. Designed to complete in ~5 minutes
+on Fargate (16 vCPU).
 
 On completion, sets players.fast_pass_complete = TRUE.
-Deep pass (analyze_blunders.py at full depth) runs after and overwrites results
-in-place via ON CONFLICT DO UPDATE.
+Deep pass runs after and overwrites results at full depth.
 
 Usage:
     python fast_pass.py --player-id 1
@@ -27,22 +27,14 @@ load_dotenv()
 import chess
 import chess.engine
 
-from db import get_conn
-from config import (
-    FAST_PASS_DEPTH,
-    STOCKFISH_VERSION,
-    ANALYSIS_GAME_LIMIT,
-    INACCURACY_THRESHOLD,
-    MISTAKE_THRESHOLD,
-    BLUNDER_THRESHOLD,
-    MISS_THRESHOLD,
-    MISS_CONTESTED_GATE,
-)
+from db import get_conn, get_app_settings, get_analysis_game_limit
+from config import STOCKFISH_VERSION
 from utils import ts
 
 # Set by main() before Pool — inherited by workers via fork
 _STOCKFISH_PATH = None
-NUM_WORKERS     = 16  # Fargate 16 vCPU
+_SETTINGS       = None  # populated from app_settings at startup
+NUM_WORKERS     = 16    # Fargate 16 vCPU
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -65,15 +57,16 @@ def find_stockfish() -> str:
 
 
 def classify(cp_loss: int, eval_before_white: int, player_color: str) -> str | None:
+    s = _SETTINGS
     player_eval = eval_before_white if player_color == "white" else -eval_before_white
-    if cp_loss >= MISS_THRESHOLD:
-        if abs(player_eval) <= MISS_CONTESTED_GATE:
+    if cp_loss >= s["miss_threshold"]:
+        if abs(player_eval) <= s["miss_contested_gate"]:
             return "miss"
-    if cp_loss >= BLUNDER_THRESHOLD:
+    if cp_loss >= s["blunder_threshold"]:
         return "blunder"
-    if cp_loss >= MISTAKE_THRESHOLD:
+    if cp_loss >= s["mistake_threshold"]:
         return "mistake"
-    if cp_loss >= INACCURACY_THRESHOLD:
+    if cp_loss >= s["inaccuracy_threshold"]:
         return "inaccuracy"
     return None
 
@@ -119,11 +112,13 @@ def analyze_and_save_game(game_dict: dict) -> dict:
     """
     Multiprocessing worker. Spawns its own Stockfish instance, analyzes one game,
     writes blunders directly to DB, returns a small summary dict.
+    Uses module-level _SETTINGS (inherited via fork from main process).
     """
     game_id      = game_dict["id"]
     player_color = game_dict["player_color"]
     opening_eco  = game_dict.get("opening_eco", "")
     moves        = game_dict["moves"]
+    depth        = _SETTINGS["fast_pass_depth"]
 
     if isinstance(moves, str):
         moves = json.loads(moves)
@@ -143,7 +138,7 @@ def analyze_and_save_game(game_dict: dict) -> dict:
             except Exception:
                 break
 
-            info_before   = engine.analyse(board, chess.engine.Limit(depth=FAST_PASS_DEPTH))
+            info_before   = engine.analyse(board, chess.engine.Limit(depth=depth))
             score_before  = info_before["score"].white().score(mate_score=10000)
             pv            = info_before.get("pv", [])
             best_move_obj = pv[0] if pv else None
@@ -152,7 +147,7 @@ def analyze_and_save_game(game_dict: dict) -> dict:
 
             board.push(move)
 
-            info_after  = engine.analyse(board, chess.engine.Limit(depth=FAST_PASS_DEPTH))
+            info_after  = engine.analyse(board, chess.engine.Limit(depth=depth))
             score_after = info_after["score"].white().score(mate_score=10000)
 
             if score_before is None or score_after is None:
@@ -185,7 +180,7 @@ def analyze_and_save_game(game_dict: dict) -> dict:
                 game_id, ply, phase, fen,
                 san, best_move_san, best_line,
                 cp, classification, opening_eco,
-                STOCKFISH_VERSION, FAST_PASS_DEPTH,
+                STOCKFISH_VERSION, depth,
             ))
 
         engine.quit()
@@ -217,7 +212,7 @@ def analyze_and_save_game(game_dict: dict) -> dict:
                     analysis_engine    = %s,
                     analysis_depth     = %s
                 WHERE id = %s
-            """, (STOCKFISH_VERSION, FAST_PASS_DEPTH, game_id))
+            """, (STOCKFISH_VERSION, depth, game_id))
         conn.commit()
         conn.close()
 
@@ -230,37 +225,38 @@ def analyze_and_save_game(game_dict: dict) -> dict:
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    global _STOCKFISH_PATH
+    global _STOCKFISH_PATH, _SETTINGS
 
-    parser = argparse.ArgumentParser(description="Fast pass onboarding analysis (depth 12)")
+    parser = argparse.ArgumentParser(description="Fast pass onboarding analysis")
     parser.add_argument("--player-id", type=int, required=True, help="Player ID to analyze")
     parser.add_argument("--workers",   type=int, default=NUM_WORKERS, help="Parallel workers")
     args = parser.parse_args()
 
     _STOCKFISH_PATH = find_stockfish()
 
-    print(f"[{ts()}] fast_pass.py starting")
-    print(f"[{ts()}] Player ID:  {args.player_id}")
-    print(f"[{ts()}] Depth:      {FAST_PASS_DEPTH}")
-    print(f"[{ts()}] Game limit: {ANALYSIS_GAME_LIMIT}")
-    print(f"[{ts()}] Workers:    {args.workers}")
-    print(f"[{ts()}] Stockfish:  {_STOCKFISH_PATH}")
-
-    conn       = get_conn()
-    games      = get_games_for_player(conn, args.player_id, ANALYSIS_GAME_LIMIT)
+    conn      = get_conn()
+    _SETTINGS = get_app_settings(conn)
+    limit     = get_analysis_game_limit(conn, args.player_id)
+    games     = get_games_for_player(conn, args.player_id, limit)
     game_dicts = [dict(g) for g in games]
     conn.close()
 
+    print(f"[{ts()}] fast_pass.py starting")
+    print(f"[{ts()}] Player ID:  {args.player_id}")
+    print(f"[{ts()}] Depth:      {_SETTINGS['fast_pass_depth']}")
+    print(f"[{ts()}] Game limit: {limit}")
+    print(f"[{ts()}] Workers:    {args.workers}")
+    print(f"[{ts()}] Stockfish:  {_STOCKFISH_PATH}")
     print(f"[{ts()}] {len(game_dicts)} games to analyze")
 
     if not game_dicts:
         print(f"[{ts()}] Nothing to do.")
         return
 
-    total      = len(game_dicts)
-    done       = 0
+    total        = len(game_dicts)
+    done         = 0
     total_issues = 0
-    start_time = time.time()
+    start_time   = time.time()
 
     with Pool(processes=args.workers) as pool:
         for result in pool.imap_unordered(analyze_and_save_game, game_dicts):
@@ -279,7 +275,6 @@ def main():
     elapsed_min = (time.time() - start_time) / 60
     print(f"[{ts()}] Fast pass complete in {elapsed_min:.1f} min — {total_issues} issues found")
 
-    # Mark fast pass complete
     conn = get_conn()
     with conn.cursor() as cur:
         cur.execute("""

@@ -31,12 +31,10 @@ import argparse
 from dotenv import load_dotenv
 load_dotenv()
 
-from db import get_conn
+from db import get_conn, get_app_settings
 from utils import ts
 
-# Games imported for free users at onboarding time.
-# Matches ANALYSIS_GAME_LIMIT so every imported game gets analyzed.
-FREE_IMPORT_LIMIT = 500
+
 
 
 def get_player_and_user(conn, player_id: int) -> tuple:
@@ -91,7 +89,9 @@ def main():
     from pipeline.import_chesscom import import_chesscom_games
     from pipeline.import_lichess  import import_lichess_games
 
-    conn = get_conn()
+    conn     = get_conn()
+    settings = get_app_settings(conn)
+    free_limit = settings["free_import_limit"]
 
     if is_paid:
         # Import all games — no cap, newest-first (game_limit=None triggers all_history mode)
@@ -99,13 +99,13 @@ def main():
         cc_imported = import_chesscom_games(conn, player, game_limit=None)
         li_imported = import_lichess_games(conn, player, since_ms=0)
     else:
-        # Free user — import last FREE_IMPORT_LIMIT games only
-        print(f"[{ts()}] Free user — importing last {FREE_IMPORT_LIMIT} games")
-        cc_imported = import_chesscom_games(conn, player, game_limit=FREE_IMPORT_LIMIT)
+        # Free user — import last free_import_limit games only
+        print(f"[{ts()}] Free user — importing last {free_limit} games")
+        cc_imported = import_chesscom_games(conn, player, game_limit=free_limit)
         # For Lichess, since_ms=0 imports all but we rely on game_limit enforcement.
         # Lichess streams in chronological order so we pass since_ms=0 and stop
-        # after FREE_IMPORT_LIMIT total across both sources.
-        remaining = max(0, FREE_IMPORT_LIMIT - cc_imported)
+        # after free_limit total across both sources.
+        remaining = max(0, free_limit - cc_imported)
         li_imported = import_lichess_games(conn, player, since_ms=0, game_limit=remaining)
 
     conn.close()

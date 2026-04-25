@@ -27,35 +27,28 @@ from multiprocessing import Pool
 from dotenv import load_dotenv
 load_dotenv()
 
-from db import get_conn, get_all_active_players
-from config import (
-    STOCKFISH_DEPTH,
-    STOCKFISH_VERSION,
-    INACCURACY_THRESHOLD,
-    MISTAKE_THRESHOLD,
-    BLUNDER_THRESHOLD,
-    MISS_THRESHOLD,
-    MISS_CONTESTED_GATE,
-    ANALYSIS_GAME_LIMIT,
-)
+from db import get_conn, get_all_active_players, get_analysis_game_limit, get_app_settings
+from config import STOCKFISH_VERSION
 from utils import ts
 
 STOCKFISH_PATH = "/usr/local/bin/stockfish"
 NUM_WORKERS    = 16
+_SETTINGS      = None  # populated from app_settings at startup
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def classify(cp_loss: int, eval_before_white: int, player_color: str) -> str | None:
+    s = _SETTINGS
     player_eval = eval_before_white if player_color == "white" else -eval_before_white
-    if cp_loss >= MISS_THRESHOLD:
-        if abs(player_eval) <= MISS_CONTESTED_GATE:
+    if cp_loss >= s["miss_threshold"]:
+        if abs(player_eval) <= s["miss_contested_gate"]:
             return "miss"
-    if cp_loss >= BLUNDER_THRESHOLD:
+    if cp_loss >= s["blunder_threshold"]:
         return "blunder"
-    if cp_loss >= MISTAKE_THRESHOLD:
+    if cp_loss >= s["mistake_threshold"]:
         return "mistake"
-    if cp_loss >= INACCURACY_THRESHOLD:
+    if cp_loss >= s["inaccuracy_threshold"]:
         return "inaccuracy"
     return None
 
@@ -123,6 +116,7 @@ def analyze_and_save_game(game_dict: dict) -> dict:
         return {"game_id": game_id, "inserted": 0, "updated": 0, "issues": 0, "success": True}
 
     try:
+        depth  = _SETTINGS["stockfish_depth"]
         engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
         engine.configure({"Threads": 1})
 
@@ -135,7 +129,7 @@ def analyze_and_save_game(game_dict: dict) -> dict:
             except Exception:
                 break
 
-            info_before   = engine.analyse(board, chess.engine.Limit(depth=STOCKFISH_DEPTH))
+            info_before   = engine.analyse(board, chess.engine.Limit(depth=depth))
             score_before  = info_before["score"].white().score(mate_score=10000)
             pv            = info_before.get("pv", [])
             best_move_obj = pv[0] if pv else None
@@ -144,7 +138,7 @@ def analyze_and_save_game(game_dict: dict) -> dict:
 
             board.push(move)
 
-            info_after  = engine.analyse(board, chess.engine.Limit(depth=STOCKFISH_DEPTH))
+            info_after  = engine.analyse(board, chess.engine.Limit(depth=depth))
             score_after = info_after["score"].white().score(mate_score=10000)
 
             if score_before is None or score_after is None:
@@ -178,7 +172,7 @@ def analyze_and_save_game(game_dict: dict) -> dict:
                 san, best_move_san, best_line,
                 cp, classification,
                 opening_eco,
-                STOCKFISH_VERSION, STOCKFISH_DEPTH,
+                STOCKFISH_VERSION, depth,
             ))
 
         engine.quit()
@@ -203,7 +197,7 @@ def analyze_and_save_game(game_dict: dict) -> dict:
                     analysis_engine    = %s,
                     analysis_depth     = %s
                 WHERE id = %s
-            """, (STOCKFISH_VERSION, STOCKFISH_DEPTH, game_id))
+            """, (STOCKFISH_VERSION, depth, game_id))
         conn.commit()
         conn.close()
 
@@ -216,6 +210,7 @@ def analyze_and_save_game(game_dict: dict) -> dict:
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    global _SETTINGS
     parser = argparse.ArgumentParser()
     parser.add_argument("--run",       action="store_true", help="Actually run (default is dry run)")
     parser.add_argument("--player",    type=str, default=None, help="Filter to one player by name (case-insensitive)")
@@ -244,10 +239,11 @@ def main():
     num_workers = args.workers
 
     print(f"[{ts()}] Engine:  {version_line.replace('id name ', '')}")
-    print(f"[{ts()}] Depth:   {STOCKFISH_DEPTH}")
+    print(f"[{ts()}] Depth:   {_SETTINGS['stockfish_depth']}")
     print(f"[{ts()}] Workers: {num_workers}")
 
-    conn = get_conn()
+    conn      = get_conn()
+    _SETTINGS = get_app_settings(conn)
 
     # When called from Fargate with --player-id, fetch the player directly
     # without requiring is_initialized = TRUE (used during onboarding deep pass)
@@ -279,16 +275,18 @@ def main():
 
     if dry_run:
         for player in players:
-            games = get_all_games_for_player(conn, player["id"], since=since, limit=ANALYSIS_GAME_LIMIT)
-            print(f"[{ts()}] {player['user_display_name']}: {len(games)} games would be reanalyzed")
+            limit = get_analysis_game_limit(conn, player["id"])
+            games = get_all_games_for_player(conn, player["id"], since=since, limit=limit)
+            print(f"[{ts()}] {player['user_display_name']}: {len(games)} games would be reanalyzed (limit={limit})")
         conn.close()
         return
 
     for player in players:
         print(f"\n[{ts()}] Processing {player['user_display_name']}...")
-        games      = get_all_games_for_player(conn, player["id"], since=since, limit=ANALYSIS_GAME_LIMIT)
+        limit      = get_analysis_game_limit(conn, player["id"])
+        games      = get_all_games_for_player(conn, player["id"], since=since, limit=limit)
         game_dicts = [dict(g) for g in games]
-        print(f"[{ts()}] {len(game_dicts)} games to reanalyze with {num_workers} workers")
+        print(f"[{ts()}] {len(game_dicts)} games to reanalyze with {num_workers} workers (limit={limit})")
 
         if not game_dicts:
             print(f"[{ts()}] Nothing to do.")

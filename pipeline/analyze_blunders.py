@@ -9,17 +9,10 @@ import shutil
 from dotenv import load_dotenv
 load_dotenv()
 
-from db import get_conn, get_all_active_players, get_unanalyzed_games_for_player
-from config import (
-    STOCKFISH_DEPTH,
-    STOCKFISH_VERSION,
-    INACCURACY_THRESHOLD,
-    MISTAKE_THRESHOLD,
-    BLUNDER_THRESHOLD,
-    MISS_THRESHOLD,
-    MISS_CONTESTED_GATE,
-)
+from db import get_conn, get_all_active_players, get_unanalyzed_games_for_player, get_app_settings
+from config import STOCKFISH_VERSION
 from utils import ts
+
 
 def find_stockfish() -> str:
     candidates = [
@@ -38,11 +31,13 @@ def find_stockfish() -> str:
         "Stockfish not found. Install with: brew install stockfish"
     )
 
-def classify(cp_loss: int, eval_before_white: int, player_color: str) -> str | None:
+
+def classify(cp_loss: int, eval_before_white: int, player_color: str,
+             settings: dict) -> str | None:
     """
     Classify a move error by centipawn loss.
 
-    Miss requires the position to have been contested (within MISS_CONTESTED_GATE
+    Miss requires the position to have been contested (within miss_contested_gate
     from the player's perspective) before the error. This prevents mate-score
     contamination from already-decided games inflating the miss count.
     If the contested gate is not met, a miss-threshold loss falls through to
@@ -50,19 +45,20 @@ def classify(cp_loss: int, eval_before_white: int, player_color: str) -> str | N
     """
     player_eval = eval_before_white if player_color == "white" else -eval_before_white
 
-    if cp_loss >= MISS_THRESHOLD:
-        if abs(player_eval) <= MISS_CONTESTED_GATE:
+    if cp_loss >= settings["miss_threshold"]:
+        if abs(player_eval) <= settings["miss_contested_gate"]:
             return "miss"
         # Position was already decided — reclassify downward rather than drop
         # Fall through to blunder/mistake/inaccuracy checks below
 
-    if cp_loss >= BLUNDER_THRESHOLD:
+    if cp_loss >= settings["blunder_threshold"]:
         return "blunder"
-    if cp_loss >= MISTAKE_THRESHOLD:
+    if cp_loss >= settings["mistake_threshold"]:
         return "mistake"
-    if cp_loss >= INACCURACY_THRESHOLD:
+    if cp_loss >= settings["inaccuracy_threshold"]:
         return "inaccuracy"
     return None
+
 
 def get_phase(ply: int, board: chess.Board) -> str:
     if ply < 20:
@@ -75,6 +71,7 @@ def get_phase(ply: int, board: chess.Board) -> str:
     if pieces <= 6:
         return "endgame"
     return "middlegame"
+
 
 def capture_pv_san(board: chess.Board, pv_moves: list, n: int = 5) -> str | None:
     """
@@ -92,7 +89,8 @@ def capture_pv_san(board: chess.Board, pv_moves: list, n: int = 5) -> str | None
             break
     return " ".join(san_list) if san_list else None
 
-def analyze_game(engine, game: dict, player_color: str) -> list:
+
+def analyze_game(engine, game: dict, player_color: str, settings: dict) -> list:
     moves = game["moves"]
     if isinstance(moves, str):
         moves = json.loads(moves)
@@ -100,7 +98,8 @@ def analyze_game(engine, game: dict, player_color: str) -> list:
     if not moves:
         return []
 
-    board = chess.Board()
+    depth  = settings["stockfish_depth"]
+    board  = chess.Board()
     blunders = []
 
     for ply, san in enumerate(moves):
@@ -109,7 +108,7 @@ def analyze_game(engine, game: dict, player_color: str) -> list:
         except Exception:
             break
 
-        info_before      = engine.analyse(board, chess.engine.Limit(depth=STOCKFISH_DEPTH))
+        info_before      = engine.analyse(board, chess.engine.Limit(depth=depth))
         score_before     = info_before["score"].white().score(mate_score=10000)
         pv               = info_before.get("pv", [])
         best_move_obj    = pv[0] if pv else None
@@ -118,7 +117,7 @@ def analyze_game(engine, game: dict, player_color: str) -> list:
 
         board.push(move)
 
-        info_after  = engine.analyse(board, chess.engine.Limit(depth=STOCKFISH_DEPTH))
+        info_after  = engine.analyse(board, chess.engine.Limit(depth=depth))
         score_after = info_after["score"].white().score(mate_score=10000)
 
         if score_before is None or score_after is None:
@@ -142,7 +141,7 @@ def analyze_game(engine, game: dict, player_color: str) -> list:
         if best_move_san and san == best_move_san:
             continue
 
-        classification = classify(max(0, cp_loss), score_before, player_color)
+        classification = classify(max(0, cp_loss), score_before, player_color, settings)
         if classification is None:
             continue
 
@@ -165,7 +164,9 @@ def analyze_game(engine, game: dict, player_color: str) -> list:
 
     return blunders
 
-def insert_blunders(conn, game_id: int, blunders: list):
+
+def insert_blunders(conn, game_id: int, blunders: list, settings: dict):
+    depth = settings["stockfish_depth"]
     with conn.cursor() as cur:
         # Delete existing blunders first — ensures stale rows from prior analyses
         # or threshold changes are never left behind
@@ -191,13 +192,15 @@ def insert_blunders(conn, game_id: int, blunders: list):
                 b["classification"],
                 b["opening_eco"],
                 STOCKFISH_VERSION,
-                STOCKFISH_DEPTH,
+                depth,
             )
             for b in blunders
         ])
     conn.commit()
 
-def mark_analyzed(conn, game_id: int):
+
+def mark_analyzed(conn, game_id: int, settings: dict):
+    depth = settings["stockfish_depth"]
     with conn.cursor() as cur:
         cur.execute("""
             UPDATE games
@@ -205,15 +208,23 @@ def mark_analyzed(conn, game_id: int):
                 analysis_engine    = %s,
                 analysis_depth     = %s
             WHERE id = %s
-        """, (STOCKFISH_VERSION, STOCKFISH_DEPTH, game_id))
+        """, (STOCKFISH_VERSION, depth, game_id))
     conn.commit()
+
 
 def main():
     stockfish_path = find_stockfish()
-    print(f"[{ts()}] Using Stockfish at: {stockfish_path}")
-    print(f"[{ts()}] Analysis depth: {STOCKFISH_DEPTH}")
 
-    conn = get_conn()
+    conn     = get_conn()
+    settings = get_app_settings(conn)
+
+    print(f"[{ts()}] Using Stockfish at: {stockfish_path}")
+    print(f"[{ts()}] Analysis depth:     {settings['stockfish_depth']}")
+    print(f"[{ts()}] Thresholds:         inaccuracy={settings['inaccuracy_threshold']} "
+          f"mistake={settings['mistake_threshold']} "
+          f"blunder={settings['blunder_threshold']} "
+          f"miss={settings['miss_threshold']}")
+
     players = get_all_active_players(conn)
     print(f"[{ts()}] Found {len(players)} active players.")
 
@@ -232,13 +243,13 @@ def main():
         total_blunders = 0
         for i, game in enumerate(games):
             try:
-                blunders = analyze_game(engine, game, game["player_color"])
+                blunders = analyze_game(engine, game, game["player_color"], settings)
                 # Reconnect before writing — Supabase drops idle connections
                 # during long Stockfish analysis runs
                 conn.close()
                 conn = get_conn()
-                insert_blunders(conn, game["id"], blunders)
-                mark_analyzed(conn, game["id"])
+                insert_blunders(conn, game["id"], blunders, settings)
+                mark_analyzed(conn, game["id"], settings)
                 total_blunders += len(blunders)
                 print(f"[{ts()}] Game {i+1}/{len(games)}: {len(blunders)} issues found")
             except Exception as e:
@@ -270,6 +281,7 @@ def main():
         print(f"  {row['classification']}: {row['count']}")
 
     conn.close()
+
 
 if __name__ == "__main__":
     main()

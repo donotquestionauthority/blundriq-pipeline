@@ -1,7 +1,20 @@
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from config import DATABASE_URL
+from config import (
+    DATABASE_URL,
+    ANALYSIS_GAME_LIMIT,
+    FREE_IMPORT_LIMIT,
+    FAST_PASS_DEPTH,
+    STOCKFISH_DEPTH,
+    STOCKFISH_VERSION,
+    INACCURACY_THRESHOLD,
+    MISTAKE_THRESHOLD,
+    BLUNDER_THRESHOLD,
+    MISS_THRESHOLD,
+    MISS_CONTESTED_GATE,
+    MAX_CP_DISPLAY,
+)
 
 
 def get_conn():
@@ -11,6 +24,104 @@ def get_conn():
         )
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
+
+# ─── App settings ─────────────────────────────────────────────────────────────
+
+# Canonical defaults — used when app_settings row is absent or unparseable.
+# Keep in sync with pipeline/config.py and the migration seed values.
+_SETTINGS_DEFAULTS = {
+    "analysis_game_limit":  ANALYSIS_GAME_LIMIT,
+    "free_import_limit":    FREE_IMPORT_LIMIT,
+    "fast_pass_depth":      FAST_PASS_DEPTH,
+    "stockfish_depth":      STOCKFISH_DEPTH,
+    "inaccuracy_threshold": INACCURACY_THRESHOLD,
+    "mistake_threshold":    MISTAKE_THRESHOLD,
+    "blunder_threshold":    BLUNDER_THRESHOLD,
+    "miss_threshold":       MISS_THRESHOLD,
+    "miss_contested_gate":  MISS_CONTESTED_GATE,
+    "max_cp_display":       MAX_CP_DISPLAY,
+}
+
+
+def get_app_settings(conn) -> dict:
+    """
+    Fetch all configurable pipeline settings from app_settings in one query.
+    Falls back to config.py constants for any key not present or unparseable.
+
+    Returns a plain dict of int values, e.g.:
+        {
+            "analysis_game_limit":  1000,
+            "free_import_limit":    500,
+            "fast_pass_depth":      12,
+            "stockfish_depth":      18,
+            "inaccuracy_threshold": 50,
+            "mistake_threshold":    100,
+            "blunder_threshold":    200,
+            "miss_threshold":       300,
+            "miss_contested_gate":  300,
+            "max_cp_display":       500,
+        }
+    """
+    keys = list(_SETTINGS_DEFAULTS.keys())
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT key, value FROM app_settings WHERE key = ANY(%s)",
+            (keys,)
+        )
+        rows = {row["key"]: row["value"] for row in cur.fetchall()}
+
+    result = {}
+    for key, default in _SETTINGS_DEFAULTS.items():
+        raw = rows.get(key)
+        if raw is not None:
+            try:
+                result[key] = int(raw)
+            except (TypeError, ValueError):
+                result[key] = default
+        else:
+            result[key] = default
+
+    # stockfish_version is not int — pass through from config, not app_settings
+    result["stockfish_version"] = STOCKFISH_VERSION
+
+    return result
+
+
+def get_analysis_game_limit(conn, player_id: int) -> int:
+    """
+    Resolve the effective analysis game limit for a player.
+
+    Resolution order:
+      1. player_settings.analysis_game_limit  (per-player override, if set)
+      2. app_settings 'analysis_game_limit'   (global default)
+      3. ANALYSIS_GAME_LIMIT constant         (hardcoded fallback)
+    """
+    with conn.cursor() as cur:
+        # Per-player override
+        cur.execute("""
+            SELECT analysis_game_limit
+            FROM player_settings
+            WHERE player_id = %s
+        """, (player_id,))
+        row = cur.fetchone()
+        if row and row["analysis_game_limit"] is not None:
+            return int(row["analysis_game_limit"])
+
+        # Global app_settings default
+        cur.execute(
+            "SELECT value FROM app_settings WHERE key = 'analysis_game_limit'"
+        )
+        row = cur.fetchone()
+        if row:
+            try:
+                return int(row["value"])
+            except (TypeError, ValueError):
+                pass
+
+    return ANALYSIS_GAME_LIMIT
+
+
+# ─── Players ──────────────────────────────────────────────────────────────────
 
 def get_all_active_players(conn):
     """
@@ -61,7 +172,7 @@ def get_active_lines_for_player(conn, player_id: int):
 
 def get_unanalyzed_games_for_player(conn, player_id: int):
     """Returns unanalyzed games within the analysis window for a player, newest first."""
-    from config import ANALYSIS_GAME_LIMIT
+    limit = get_analysis_game_limit(conn, player_id)
     with conn.cursor() as cur:
         cur.execute("""
             SELECT g.*
@@ -75,9 +186,11 @@ def get_unanalyzed_games_for_player(conn, player_id: int):
                   LIMIT %s
               )
             ORDER BY g.played_at DESC
-        """, (player_id, player_id, ANALYSIS_GAME_LIMIT))
+        """, (player_id, player_id, limit))
         return cur.fetchall()
 
+
+# ─── Pipeline runs ────────────────────────────────────────────────────────────
 
 def log_pipeline_run(conn, status, games_imported=0,
                      games_matched=0, games_analyzed=0,
