@@ -7,6 +7,8 @@ charset-normalizer==3.4.7
 chess==1.11.2
 idna==3.11
 psycopg2-binary==2.9.11
+python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 requests==2.33.1
+six==1.17.0
 urllib3==2.6.3
