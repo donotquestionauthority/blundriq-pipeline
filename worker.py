@@ -82,12 +82,11 @@ def _start_run(job_type: str, player_id: int):
     try:
         from db import get_conn, log_pipeline_run
         conn = get_conn()
-        # Store job context in error_message on the initial insert so it's
-        # visible even if the job crashes before _finish_run is called.
         run_id = log_pipeline_run(
             conn,
             status="running",
-            error_message=f"job_type={job_type} player_id={player_id}",
+            player_id=player_id,
+            error_message=f"job_type={job_type}",
         )
         return conn, run_id
     except Exception as e:
@@ -183,9 +182,7 @@ def main():
             _finish_run(run_conn, run_id, "failed", f"unknown job_type={job_type!r}")
             sys.exit(1)
 
-        # Clean finish — clear the placeholder error_message set at start
-        _finish_run(run_conn, run_id, "completed",
-                    error_message=f"job_type={job_type} player_id={player_id}")
+        _finish_run(run_conn, run_id, "completed")
 
     except JobTimeoutError:
         msg = (

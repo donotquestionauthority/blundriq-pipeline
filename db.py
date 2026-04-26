@@ -192,16 +192,16 @@ def get_unanalyzed_games_for_player(conn, player_id: int):
 
 # ─── Pipeline runs ────────────────────────────────────────────────────────────
 
-def log_pipeline_run(conn, status, games_imported=0,
+def log_pipeline_run(conn, status, player_id=None, games_imported=0,
                      games_matched=0, games_analyzed=0,
                      error_message=None, run_id=None):
     with conn.cursor() as cur:
         if run_id is None:
             cur.execute("""
-                INSERT INTO pipeline_runs (status)
-                VALUES (%s)
+                INSERT INTO pipeline_runs (status, player_id)
+                VALUES (%s, %s)
                 RETURNING id
-            """, (status,))
+            """, (status, player_id))
             run_id = cur.fetchone()["id"]
         else:
             cur.execute("""

@@ -12,7 +12,8 @@ INITIAL_IMPORT_MONTHS = 3
 # Opening/middlegame/endgame phase boundaries (in plies)
 # Engineering constants — not exposed as admin settings.
 OPENING_PLY_LIMIT = 20
-ENDGAME_MATERIAL  = 13  # total pieces remaining (excl. kings/pawns)
+# Endgame threshold: pieces <= 6 (queens + rooks + bishops + knights, excl. kings/pawns)
+# Hardcoded in analysis_core.get_phase() — change there if adjusting.
 
 # ─── Chessable book IDs and their colors ────────────────────────────────────
 # Add or remove books here when your repertoire changes
