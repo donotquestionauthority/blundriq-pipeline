@@ -6,7 +6,7 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 
-from db import get_conn, get_all_active_players, get_active_lines_for_player, get_analysis_game_limit, log_pipeline_run
+from db import get_conn, get_all_active_players, get_active_lines_for_player, get_analysis_game_limit, log_pipeline_run, cancel_stale_gh_runs
 from pipeline.matching import compute_matches, insert_results
 from utils import ts
 
@@ -46,6 +46,7 @@ def mark_no_match(conn, game_ids: list):
 
 def main():
     conn = get_conn()
+    cancel_stale_gh_runs(conn)
     run_id = log_pipeline_run(conn, status="running")
     print(f"[{ts()}] Pipeline run {run_id} started (match_repertoire).")
 

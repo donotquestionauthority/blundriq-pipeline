@@ -11,7 +11,7 @@ from dateutil.relativedelta import relativedelta
 from dotenv import load_dotenv
 load_dotenv()
 
-from db import get_conn, get_all_active_players, log_pipeline_run  # log_pipeline_run used in main()
+from db import get_conn, get_all_active_players, log_pipeline_run, cancel_stale_gh_runs
 from config import INITIAL_IMPORT_MONTHS
 from utils import ts, moves_to_fen_sequence
 
@@ -229,6 +229,7 @@ def import_chesscom_games(conn, player: dict, months: int = None, game_limit: in
 
 def main():
     conn = get_conn()
+    cancel_stale_gh_runs(conn)
     run_id = log_pipeline_run(conn, status="running")
     print(f"[{ts()}] Pipeline run {run_id} started (import_chesscom).")
 

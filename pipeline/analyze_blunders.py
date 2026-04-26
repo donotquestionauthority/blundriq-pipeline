@@ -6,7 +6,7 @@ import shutil
 from dotenv import load_dotenv
 load_dotenv()
 
-from db import get_conn, get_all_active_players, get_unanalyzed_games_for_player, get_app_settings, log_pipeline_run
+from db import get_conn, get_all_active_players, get_unanalyzed_games_for_player, get_app_settings, log_pipeline_run, cancel_stale_gh_runs
 from config import STOCKFISH_VERSION
 from utils import ts
 from pipeline.analysis_core import analyze_game_full
@@ -88,6 +88,7 @@ def main():
     conn     = get_conn()
     settings = get_app_settings(conn)
 
+    cancel_stale_gh_runs(conn)
     run_id = log_pipeline_run(conn, status="running")
     print(f"[{ts()}] Pipeline run {run_id} started (analyze_blunders).")
     print(f"[{ts()}] Using Stockfish at: {stockfish_path}")

@@ -130,7 +130,8 @@ def get_analysis_game_limit(conn, player_id: int) -> int:
 def get_all_active_players(conn):
     """
     Returns players eligible for the hourly pipeline:
-    - paid subscribers with fast pass complete (incremental import + analysis)
+    - paid subscribers with fast pass complete AND is_initialized (incremental import + analysis)
+    - excludes players mid-onboarding (is_initialized=FALSE) — they are owned by Fargate/Dell
     Excludes free/trial users and cancelled subscribers.
     """
     with conn.cursor() as cur:
@@ -144,6 +145,7 @@ def get_all_active_players(conn):
               AND u.registration_approved = TRUE
               AND u.is_paid = TRUE
               AND p.fast_pass_complete = TRUE
+              AND p.is_initialized = TRUE
         """)
         return cur.fetchall()
 
@@ -195,6 +197,26 @@ def get_unanalyzed_games_for_player(conn, player_id: int):
 
 
 # ─── Pipeline runs ────────────────────────────────────────────────────────────
+
+def cancel_stale_gh_runs(conn):
+    """
+    Mark any GH Actions pipeline_runs rows still in 'running' state as 'cancelled'.
+    Called at the start of each GH Actions script to clean up rows left behind
+    by previously cancelled or killed workflow runs.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE pipeline_runs
+            SET    status      = 'cancelled',
+                   finished_at = NOW()
+            WHERE  status     = 'running'
+              AND  player_id IS NULL
+        """)
+        count = cur.rowcount
+    conn.commit()
+    if count:
+        print(f"[pipeline] Cleaned up {count} stale GH Actions run(s).")
+
 
 def log_pipeline_run(conn, status, player_id=None, games_imported=0,
                      games_matched=0, games_analyzed=0,
