@@ -238,7 +238,7 @@ def main():
         total_inserted = 0
         for player in players:
             print(f"[{ts()}] Processing {player['user_display_name']}...")
-            inserted = import_chesscom_games(conn, player)
+            inserted = import_chesscom_games(conn, player, months=1)
             total_inserted += inserted
         print(f"[{ts()}] Total imported: {total_inserted} new Chess.com games.")
         log_pipeline_run(conn, status="completed", games_imported=total_inserted, run_id=run_id)
