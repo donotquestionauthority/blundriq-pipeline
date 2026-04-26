@@ -31,10 +31,8 @@ import argparse
 from dotenv import load_dotenv
 load_dotenv()
 
-from db import get_conn, get_app_settings
+from db import get_conn, get_app_settings, get_analysis_game_limit
 from utils import ts
-
-
 
 
 def get_player_and_user(conn, player_id: int) -> tuple:
@@ -118,8 +116,9 @@ def main():
     from pipeline.matching import compute_matches, insert_results
     from db import get_active_lines_for_player
 
-    unmatched = get_unmatched_games(conn, player_id)
-    print(f"[{ts()}] {len(unmatched)} unmatched games to process")
+    limit = get_analysis_game_limit(conn, player_id)
+    unmatched = get_unmatched_games(conn, player_id, limit)
+    print(f"[{ts()}] {len(unmatched)} unmatched games to process (within {limit}-game window)")
     if unmatched:
         lines = get_active_lines_for_player(conn, player_id)
         result_rows, lines_by_game_id = compute_matches(unmatched, lines)

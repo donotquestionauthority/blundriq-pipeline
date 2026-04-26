@@ -6,21 +6,31 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 
-from db import get_conn, get_all_active_players, get_active_lines_for_player
+from db import get_conn, get_all_active_players, get_active_lines_for_player, get_analysis_game_limit
 from pipeline.matching import compute_matches, insert_results
 from utils import ts
 
-def get_unmatched_games(conn, player_id: int) -> list:
+def get_unmatched_games(conn, player_id: int, limit: int) -> list:
+    """
+    Returns unmatched games within the analysis window only.
+    No point matching games outside the window — they will never be analyzed.
+    """
     with conn.cursor() as cur:
         cur.execute("""
             SELECT g.id, g.moves, g.fen_sequence, g.player_color, g.opening_eco
             FROM   games g
             LEFT JOIN game_repertoire_results grr ON grr.game_id = g.id
             WHERE  g.player_id = %s
-            AND  grr.id IS NULL
-            AND  g.no_repertoire_match = FALSE
+            AND    grr.id IS NULL
+            AND    g.no_repertoire_match = FALSE
+            AND    g.id IN (
+                SELECT id FROM games
+                WHERE player_id = %s
+                ORDER BY played_at DESC
+                LIMIT %s
+            )
             ORDER BY g.played_at ASC
-        """, (player_id,))
+        """, (player_id, player_id, limit))
         return cur.fetchall()
 
 def mark_no_match(conn, game_ids: list):
@@ -43,11 +53,12 @@ def main():
         print(f"\n[{ts()}] Processing {player['user_display_name']}...")
 
         t0 = time.time()
+        limit = get_analysis_game_limit(conn, player["id"])
         active_lines = get_active_lines_for_player(conn, player["id"])
         print(f"[{ts()}] Loaded {len(active_lines)} active lines in {time.time()-t0:.2f}s")
 
-        unmatched = get_unmatched_games(conn, player["id"])
-        print(f"[{ts()}] Found {len(unmatched)} unmatched games.")
+        unmatched = get_unmatched_games(conn, player["id"], limit)
+        print(f"[{ts()}] Found {len(unmatched)} unmatched games (within {limit}-game window).")
 
         if not unmatched:
             print(f"[{ts()}] Nothing to do.")
