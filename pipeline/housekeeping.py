@@ -46,6 +46,15 @@ def get_active_players(conn) -> list:
         return cur.fetchall()
 
 
+
+def cleanup_old_pipeline_runs(conn, days: int = 90) -> int:
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM pipeline_runs WHERE started_at < NOW() - INTERVAL '%s days'", (days,))
+        deleted = cur.rowcount
+    conn.commit()
+    return deleted
+
+
 def cleanup_analysis_beyond_limit(conn, player_id: int, limit: int) -> tuple[int, int]:
     """
     Delete blunders and nullify analysis metadata for games ranked beyond
@@ -179,6 +188,9 @@ def run_housekeeping(conn):
 
     n = cleanup_expired_email_verification_tokens(conn)
     print(f"[{ts()}]   Email verification tokens:   {n} expired row(s) removed")
+
+    n = cleanup_old_pipeline_runs(conn)
+    print(f"[{ts()}]   Pipeline runs (>90 days):    {n} old row(s) removed")
 
     players = get_active_players(conn)
     total_games_cleaned   = 0
