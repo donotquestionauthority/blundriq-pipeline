@@ -86,6 +86,7 @@ def _start_run(job_type: str, player_id: int):
             conn,
             status="running",
             player_id=player_id,
+            script_name=job_type,
             error_message=f"job_type={job_type}",
         )
         return conn, run_id

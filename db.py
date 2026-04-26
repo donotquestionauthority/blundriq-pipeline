@@ -218,16 +218,16 @@ def cancel_stale_gh_runs(conn):
         print(f"[pipeline] Cleaned up {count} stale GH Actions run(s).")
 
 
-def log_pipeline_run(conn, status, player_id=None, games_imported=0,
-                     games_matched=0, games_analyzed=0,
+def log_pipeline_run(conn, status, player_id=None, script_name=None,
+                     games_imported=0, games_matched=0, games_analyzed=0,
                      error_message=None, run_id=None):
     with conn.cursor() as cur:
         if run_id is None:
             cur.execute("""
-                INSERT INTO pipeline_runs (status, player_id)
-                VALUES (%s, %s)
+                INSERT INTO pipeline_runs (status, player_id, script_name)
+                VALUES (%s, %s, %s)
                 RETURNING id
-            """, (status, player_id))
+            """, (status, player_id, script_name))
             run_id = cur.fetchone()["id"]
         else:
             cur.execute("""

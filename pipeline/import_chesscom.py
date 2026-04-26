@@ -117,7 +117,7 @@ def import_chesscom_games(conn, player: dict, months: int = None, game_limit: in
         return 0
 
     # all_history=True fetches all archives regardless of months cutoff
-    all_history = (game_limit is None)
+    all_history = (game_limit is not None and months is None)
     if months is None:
         months = INITIAL_IMPORT_MONTHS
 
@@ -230,7 +230,7 @@ def import_chesscom_games(conn, player: dict, months: int = None, game_limit: in
 def main():
     conn = get_conn()
     cancel_stale_gh_runs(conn)
-    run_id = log_pipeline_run(conn, status="running")
+    run_id = log_pipeline_run(conn, status="running", script_name="import_chesscom")
     print(f"[{ts()}] Pipeline run {run_id} started (import_chesscom).")
 
     try:
