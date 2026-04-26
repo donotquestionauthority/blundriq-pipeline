@@ -14,6 +14,8 @@ from config import (
     MISS_THRESHOLD,
     MISS_CONTESTED_GATE,
     MAX_CP_DISPLAY,
+    LOST_WINS_PEAK_THRESHOLD,
+    LOST_WINS_SUSTAINED_MOVES,
 )
 
 
@@ -30,16 +32,18 @@ def get_conn():
 # Canonical defaults — used when app_settings row is absent or unparseable.
 # Keep in sync with pipeline/config.py and the migration seed values.
 _SETTINGS_DEFAULTS = {
-    "analysis_game_limit":  ANALYSIS_GAME_LIMIT,
-    "free_import_limit":    FREE_IMPORT_LIMIT,
-    "fast_pass_depth":      FAST_PASS_DEPTH,
-    "stockfish_depth":      STOCKFISH_DEPTH,
-    "inaccuracy_threshold": INACCURACY_THRESHOLD,
-    "mistake_threshold":    MISTAKE_THRESHOLD,
-    "blunder_threshold":    BLUNDER_THRESHOLD,
-    "miss_threshold":       MISS_THRESHOLD,
-    "miss_contested_gate":  MISS_CONTESTED_GATE,
-    "max_cp_display":       MAX_CP_DISPLAY,
+    "analysis_game_limit":       ANALYSIS_GAME_LIMIT,
+    "free_import_limit":         FREE_IMPORT_LIMIT,
+    "fast_pass_depth":           FAST_PASS_DEPTH,
+    "stockfish_depth":           STOCKFISH_DEPTH,
+    "inaccuracy_threshold":      INACCURACY_THRESHOLD,
+    "mistake_threshold":         MISTAKE_THRESHOLD,
+    "blunder_threshold":         BLUNDER_THRESHOLD,
+    "miss_threshold":            MISS_THRESHOLD,
+    "miss_contested_gate":       MISS_CONTESTED_GATE,
+    "max_cp_display":            MAX_CP_DISPLAY,
+    "lost_wins_peak_threshold":  LOST_WINS_PEAK_THRESHOLD,
+    "lost_wins_sustained_moves": LOST_WINS_SUSTAINED_MOVES,
 }
 
 

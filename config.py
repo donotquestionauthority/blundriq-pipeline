@@ -50,6 +50,9 @@ MISS_THRESHOLD       = 300
 MISS_CONTESTED_GATE  = 300
 MAX_CP_DISPLAY       = 500
 
+LOST_WINS_PEAK_THRESHOLD  = 300  # min cp advantage to qualify as a lost win
+LOST_WINS_SUSTAINED_MOVES = 3    # consecutive player moves that advantage must be held
+
 CLASSIFICATION_WEIGHTS = {
     'miss':       8,
     'blunder':    4,
