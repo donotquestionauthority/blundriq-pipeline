@@ -89,7 +89,7 @@ def main():
     settings = get_app_settings(conn)
 
     cancel_stale_gh_runs(conn)
-    run_id = log_pipeline_run(conn, status="running")
+    run_id = log_pipeline_run(conn, status="running", script_name="analyze_blunders")
     print(f"[{ts()}] Pipeline run {run_id} started (analyze_blunders).")
     print(f"[{ts()}] Using Stockfish at: {stockfish_path}")
     print(f"[{ts()}] Analysis depth:     {settings['stockfish_depth']}")

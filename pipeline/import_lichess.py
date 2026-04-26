@@ -207,7 +207,7 @@ def import_lichess_games(conn, player: dict, since_ms: int = None, game_limit: i
 def main():
     conn = get_conn()
     cancel_stale_gh_runs(conn)
-    run_id = log_pipeline_run(conn, status="running")
+    run_id = log_pipeline_run(conn, status="running", script_name="import_lichess")
     print(f"[{ts()}] Pipeline run {run_id} started (import_lichess).")
 
     try:

@@ -47,7 +47,7 @@ def mark_no_match(conn, game_ids: list):
 def main():
     conn = get_conn()
     cancel_stale_gh_runs(conn)
-    run_id = log_pipeline_run(conn, status="running")
+    run_id = log_pipeline_run(conn, status="running", script_name="match_repertoire")
     print(f"[{ts()}] Pipeline run {run_id} started (match_repertoire).")
 
     try:
