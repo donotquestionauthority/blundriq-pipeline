@@ -235,6 +235,7 @@ def main():
         done           = 0
         total_inserted = 0
         total_updated  = 0
+        total_failed   = 0
         start_time     = time.time()
 
         with Pool(processes=num_workers) as pool:
@@ -247,6 +248,7 @@ def main():
                     issues = result["issues"]
                 else:
                     issues = 0
+                    total_failed += 1
                     print(f"[{ts()}] Game {result['game_id']} failed: {result.get('error')}")
 
                 elapsed   = time.time() - start_time
@@ -265,6 +267,8 @@ def main():
             f"[{ts()}] Done {player['user_display_name']} in {elapsed_hrs:.2f} hrs — "
             f"{total_inserted} new blunders, {total_updated} updated in-place"
         )
+        if total_failed:
+            print(f"[{ts()}] WARNING: {total_failed}/{total} games failed analysis — check logs above for game IDs and errors")
 
         # Reopen connection after Pool exits — safe to use now that workers are done.
         conn = get_conn()

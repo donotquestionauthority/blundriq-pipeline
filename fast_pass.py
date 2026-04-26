@@ -170,6 +170,7 @@ def main():
     total        = len(game_dicts)
     done         = 0
     total_issues = 0
+    total_failed = 0
     start_time   = time.time()
 
     with Pool(processes=args.workers) as pool:
@@ -178,6 +179,7 @@ def main():
             if result["success"]:
                 total_issues += result["issues"]
             else:
+                total_failed += 1
                 print(f"[{ts()}] Game {result['game_id']} failed: {result.get('error')}")
 
             elapsed   = time.time() - start_time
@@ -188,6 +190,8 @@ def main():
 
     elapsed_min = (time.time() - start_time) / 60
     print(f"[{ts()}] Fast pass complete in {elapsed_min:.1f} min — {total_issues} issues found")
+    if total_failed:
+        print(f"[{ts()}] WARNING: {total_failed}/{total} games failed analysis — check logs above for game IDs and errors")
 
     conn = get_conn()
     with conn.cursor() as cur:
