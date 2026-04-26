@@ -161,7 +161,9 @@ def import_chesscom_games(conn, player: dict, months: int = None, game_limit: in
             end_time = game.get("end_time")
             played_at = datetime.fromtimestamp(end_time, tz=timezone.utc) if end_time else None
 
-            if latest and played_at and played_at <= latest:
+            # In incremental mode, skip games older than the newest already imported.
+            # In all_history mode, skip this check and rely on ON CONFLICT DO NOTHING.
+            if not all_history and latest and played_at and played_at <= latest:
                 continue
 
             source_game_id = game.get("url", "").split("/")[-1]
