@@ -143,8 +143,11 @@ def main():
 
     # ── Step 4: Auto-enqueue deep pass for paid users ──────────────────────────
     if is_paid:
-        print(f"[{ts()}] === Step 4: Enqueue deep pass ===")
-        enqueue_deep_pass(player_id)
+        if player.get("deep_pass_complete"):
+            print(f"[{ts()}] deep_pass_complete already TRUE — skipping deep pass enqueue")
+        else:
+            print(f"[{ts()}] === Step 4: Enqueue deep pass ===")
+            enqueue_deep_pass(player_id)
     else:
         print(f"[{ts()}] Free user — skipping deep pass enqueue")
 
