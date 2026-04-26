@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 load_dotenv()
 
-from db import get_conn, get_all_active_players
+from db import get_conn, get_all_active_players, log_pipeline_run
 from config import INITIAL_IMPORT_MONTHS
 from utils import ts, moves_to_fen_sequence
 
@@ -206,15 +206,28 @@ def import_lichess_games(conn, player: dict, since_ms: int = None, game_limit: i
 
 def main():
     conn = get_conn()
-    players = get_all_active_players(conn)
-    print(f"[{ts()}] Found {len(players)} active players.")
-    total_inserted = 0
-    for player in players:
-        print(f"[{ts()}] Processing {player['user_display_name']}...")
-        inserted = import_lichess_games(conn, player)
-        total_inserted += inserted
-    print(f"[{ts()}] Total imported: {total_inserted} new Lichess games.")
-    conn.close()
+    run_id = log_pipeline_run(conn, status="running")
+    print(f"[{ts()}] Pipeline run {run_id} started (import_lichess).")
+
+    try:
+        players = get_all_active_players(conn)
+        print(f"[{ts()}] Found {len(players)} active players.")
+        total_inserted = 0
+        for player in players:
+            print(f"[{ts()}] Processing {player['user_display_name']}...")
+            inserted = import_lichess_games(conn, player)
+            total_inserted += inserted
+        print(f"[{ts()}] Total imported: {total_inserted} new Lichess games.")
+        log_pipeline_run(conn, status="completed", games_imported=total_inserted, run_id=run_id)
+    except Exception as e:
+        print(f"[{ts()}] Pipeline run {run_id} failed: {e}")
+        try:
+            log_pipeline_run(conn, status="failed", error_message=str(e)[:500], run_id=run_id)
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
     main()
