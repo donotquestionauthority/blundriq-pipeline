@@ -30,53 +30,14 @@ load_dotenv()
 from db import get_conn, get_all_active_players, get_analysis_game_limit, get_app_settings
 from config import STOCKFISH_VERSION
 from utils import ts
+from pipeline.analysis_core import analyze_game_full
 
 STOCKFISH_PATH = "/usr/local/bin/stockfish"
 NUM_WORKERS    = 16
-_SETTINGS      = None  # populated from app_settings at startup
+_SETTINGS      = None  # populated from app_settings at startup; inherited by workers via fork
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-
-def classify(cp_loss: int, eval_before_white: int, player_color: str) -> str | None:
-    s = _SETTINGS
-    player_eval = eval_before_white if player_color == "white" else -eval_before_white
-    if cp_loss >= s["miss_threshold"]:
-        if abs(player_eval) <= s["miss_contested_gate"]:
-            return "miss"
-    if cp_loss >= s["blunder_threshold"]:
-        return "blunder"
-    if cp_loss >= s["mistake_threshold"]:
-        return "mistake"
-    if cp_loss >= s["inaccuracy_threshold"]:
-        return "inaccuracy"
-    return None
-
-
-def capture_pv_san(board: chess.Board, pv_moves: list, n: int = 5) -> str | None:
-    san_list = []
-    b = board.copy()
-    for move in pv_moves[:n]:
-        try:
-            san_list.append(b.san(move))
-            b.push(move)
-        except Exception:
-            break
-    return " ".join(san_list) if san_list else None
-
-
-def get_phase(ply: int, board: chess.Board) -> str:
-    if ply < 20:
-        return "opening"
-    pieces = sum(
-        len(board.pieces(pt, color))
-        for color in chess.COLORS
-        for pt in [chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT]
-    )
-    if pieces <= 6:
-        return "endgame"
-    return "middlegame"
-
+# ─── DB helpers ───────────────────────────────────────────────────────────────
 
 def get_all_games_for_player(conn, player_id: int, since=None, limit: int = None) -> list:
     with conn.cursor() as cur:
@@ -103,12 +64,13 @@ def analyze_and_save_game(game_dict: dict) -> dict:
     """
     Analyzes one game and writes results directly to DB inside the worker process.
     Only returns a tiny summary dict back through the multiprocessing queue.
+    Uses module-level _SETTINGS (set in main() before Pool, inherited via fork).
     """
     game_id      = game_dict["id"]
     player_color = game_dict["player_color"]
-    opening_eco  = game_dict.get("opening_eco", "")
-    moves        = game_dict["moves"]
+    depth        = _SETTINGS["stockfish_depth"]
 
+    moves = game_dict["moves"]
     if isinstance(moves, str):
         moves = json.loads(moves)
 
@@ -116,64 +78,10 @@ def analyze_and_save_game(game_dict: dict) -> dict:
         return {"game_id": game_id, "inserted": 0, "updated": 0, "issues": 0, "success": True}
 
     try:
-        depth  = _SETTINGS["stockfish_depth"]
         engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
         engine.configure({"Threads": 1})
 
-        board    = chess.Board()
-        blunders = []
-
-        for ply, san in enumerate(moves):
-            try:
-                move = board.parse_san(san)
-            except Exception:
-                break
-
-            info_before   = engine.analyse(board, chess.engine.Limit(depth=depth))
-            score_before  = info_before["score"].white().score(mate_score=10000)
-            pv            = info_before.get("pv", [])
-            best_move_obj = pv[0] if pv else None
-            best_move_san = board.san(best_move_obj) if best_move_obj else None
-            best_line     = capture_pv_san(board, pv, n=5)
-
-            board.push(move)
-
-            info_after  = engine.analyse(board, chess.engine.Limit(depth=depth))
-            score_after = info_after["score"].white().score(mate_score=10000)
-
-            if score_before is None or score_after is None:
-                continue
-
-            cp_loss = (score_before - score_after) if player_color == "white" else (score_after - score_before)
-
-            is_player_move = (
-                (ply % 2 == 0 and player_color == "white") or
-                (ply % 2 == 1 and player_color == "black")
-            )
-            if not is_player_move:
-                continue
-
-            if best_move_san and san == best_move_san:
-                continue
-
-            cp             = max(0, cp_loss)
-            classification = classify(cp, score_before, player_color)
-            if classification is None:
-                continue
-
-            board.pop()
-            fen   = board.fen()
-            phase = get_phase(ply, board)
-            board.push(move)
-
-            blunders.append((
-                game_id,
-                ply, phase, fen,
-                san, best_move_san, best_line,
-                cp, classification,
-                opening_eco,
-                STOCKFISH_VERSION, depth,
-            ))
+        blunders, peak_advantage = analyze_game_full(engine, game_dict, player_color, _SETTINGS, depth=depth)
 
         engine.quit()
 
@@ -190,14 +98,25 @@ def analyze_and_save_game(game_dict: dict) -> dict:
                          centipawn_loss, classification, opening_eco,
                          engine_version, analysis_depth)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, blunders)
+                """, [
+                    (
+                        game_id,
+                        b["ply"], b["phase"], b["fen"],
+                        b["move_played"], b["best_move"], b["best_line"],
+                        b["centipawn_loss"], b["classification"],
+                        b["opening_eco"],
+                        STOCKFISH_VERSION, depth,
+                    )
+                    for b in blunders
+                ])
             cur.execute("""
                 UPDATE games
                 SET stockfish_analyzed = TRUE,
                     analysis_engine    = %s,
-                    analysis_depth     = %s
+                    analysis_depth     = %s,
+                    peak_advantage     = %s
                 WHERE id = %s
-            """, (STOCKFISH_VERSION, depth, game_id))
+            """, (STOCKFISH_VERSION, depth, peak_advantage, game_id))
         conn.commit()
         conn.close()
 
