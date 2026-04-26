@@ -225,11 +225,11 @@ def main():
         # Close the main connection before the Pool starts — it would sit idle
         # for 30+ minutes while workers run, causing Supabase to terminate it.
         # Each worker opens its own connection internally so this is safe.
+        # The fresh connection is opened AFTER the Pool exits, not before.
         try:
             conn.close()
         except Exception:
             pass
-        conn = get_conn()  # fresh connection for next player after Pool completes
 
         total          = len(game_dicts)
         done           = 0
@@ -265,6 +265,9 @@ def main():
             f"[{ts()}] Done {player['user_display_name']} in {elapsed_hrs:.2f} hrs — "
             f"{total_inserted} new blunders, {total_updated} updated in-place"
         )
+
+        # Reopen connection after Pool exits — safe to use now that workers are done.
+        conn = get_conn()
 
         # Mark deep pass complete — re-enables hourly pipeline for this player.
         with conn.cursor() as cur:

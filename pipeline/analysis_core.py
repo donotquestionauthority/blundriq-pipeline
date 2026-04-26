@@ -83,7 +83,6 @@ def capture_pv_san(board: chess.Board, pv_moves: list, n: int = 5) -> str | None
     return " ".join(san_list) if san_list else None
 
 
-
 def analyze_game_full(engine: chess.engine.SimpleEngine, game: dict,
                       player_color: str, settings: dict, depth: int) -> tuple[list, int | None, int | None]:
     """
@@ -105,7 +104,7 @@ def analyze_game_full(engine: chess.engine.SimpleEngine, game: dict,
     if isinstance(moves, str):
         moves = json.loads(moves)
     if not moves:
-        return [], None
+        return [], None, None
 
     threshold     = settings.get("lost_wins_peak_threshold", 300)
     sustained_req = settings.get("lost_wins_sustained_moves", 3)
@@ -190,5 +189,3 @@ def analyze_game_full(engine: chess.engine.SimpleEngine, game: dict,
             })
 
     return blunders, overall_peak, final_eval
-
-
