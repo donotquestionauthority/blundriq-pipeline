@@ -91,7 +91,7 @@ def analyze_and_save_game(game_dict: dict) -> dict:
         engine = chess.engine.SimpleEngine.popen_uci(_STOCKFISH_PATH)
         engine.configure({"Threads": 1})
 
-        blunders, peak_advantage = analyze_game_full(engine, game_dict, player_color, _SETTINGS, depth=depth)
+        blunders, peak_advantage, final_eval = analyze_game_full(engine, game_dict, player_color, _SETTINGS, depth=depth)
 
         engine.quit()
 
@@ -123,9 +123,10 @@ def analyze_and_save_game(game_dict: dict) -> dict:
                 SET stockfish_analyzed = TRUE,
                     analysis_engine    = %s,
                     analysis_depth     = %s,
-                    peak_advantage     = %s
+                    peak_advantage     = %s,
+                    final_eval         = %s
                 WHERE id = %s
-            """, (STOCKFISH_VERSION, depth, peak_advantage, game_id))
+            """, (STOCKFISH_VERSION, depth, peak_advantage, final_eval, game_id))
         conn.commit()
         conn.close()
 

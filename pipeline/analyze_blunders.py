@@ -64,7 +64,8 @@ def insert_blunders(conn, game_id: int, blunders: list, settings: dict):
     conn.commit()
 
 
-def mark_analyzed(conn, game_id: int, settings: dict, peak_advantage: int | None = None):
+def mark_analyzed(conn, game_id: int, settings: dict, peak_advantage: int | None = None,
+                  final_eval: int | None = None):
     depth = settings["stockfish_depth"]
     with conn.cursor() as cur:
         cur.execute("""
@@ -72,9 +73,10 @@ def mark_analyzed(conn, game_id: int, settings: dict, peak_advantage: int | None
             SET stockfish_analyzed = TRUE,
                 analysis_engine    = %s,
                 analysis_depth     = %s,
-                peak_advantage     = %s
+                peak_advantage     = %s,
+                final_eval         = %s
             WHERE id = %s
-        """, (STOCKFISH_VERSION, depth, peak_advantage, game_id))
+        """, (STOCKFISH_VERSION, depth, peak_advantage, final_eval, game_id))
     conn.commit()
 
 
@@ -112,7 +114,7 @@ def main():
         total_blunders = 0
         for i, game in enumerate(games):
             try:
-                blunders, peak_advantage = analyze_game_full(
+                blunders, peak_advantage, final_eval = analyze_game_full(
                     engine, game, game["player_color"], settings,
                     depth=settings["stockfish_depth"]
                 )
@@ -121,7 +123,8 @@ def main():
                 conn.close()
                 conn = get_conn()
                 insert_blunders(conn, game["id"], blunders, settings)
-                mark_analyzed(conn, game["id"], settings, peak_advantage=peak_advantage)
+                mark_analyzed(conn, game["id"], settings, peak_advantage=peak_advantage,
+                              final_eval=final_eval)
                 total_blunders += len(blunders)
                 print(f"[{ts()}] Game {i+1}/{len(games)}: {len(blunders)} issues found")
             except Exception as e:

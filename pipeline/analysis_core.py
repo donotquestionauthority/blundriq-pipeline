@@ -85,15 +85,19 @@ def capture_pv_san(board: chess.Board, pv_moves: list, n: int = 5) -> str | None
 
 
 def analyze_game_full(engine: chess.engine.SimpleEngine, game: dict,
-                      player_color: str, settings: dict, depth: int) -> tuple[list, int | None]:
+                      player_color: str, settings: dict, depth: int) -> tuple[list, int | None, int | None]:
     """
-    Single-pass analysis: computes both blunders and peak_advantage in one
+    Single-pass analysis: computes blunders, peak_advantage, and final_eval in one
     traversal of the game moves. Avoids running Stockfish twice per game.
 
     Returns:
-        (blunders, peak_advantage)
+        (blunders, peak_advantage, final_eval)
         blunders:       list of blunder dicts (see analyze_game docstring)
-        peak_advantage: int or None (see compute_peak_advantage docstring)
+        peak_advantage: int or None — max sustained cp advantage from player's POV
+                        (None if player never held threshold cp for sustained_moves moves)
+        final_eval:     int or None — player's eval (cp, player POV) on their last move.
+                        Used by Lost Wins to detect games where player was still winning
+                        when a non-chess termination (timeout/abandon) ended the game.
     """
     import json
 
@@ -111,6 +115,7 @@ def analyze_game_full(engine: chess.engine.SimpleEngine, game: dict,
     streak        = 0
     streak_max    = 0
     overall_peak  = None
+    final_eval    = None  # last eval from player's POV on their last move
 
     for ply, san in enumerate(moves):
         try:
@@ -141,6 +146,8 @@ def analyze_game_full(engine: chess.engine.SimpleEngine, game: dict,
         if is_player_move:
             # ── Peak advantage tracking ────────────────────────────────────
             player_eval = score_before if player_color == "white" else -score_before
+            final_eval  = player_eval  # updated on every player move; last value = final
+
             if player_eval >= threshold:
                 streak    += 1
                 streak_max = max(streak_max, player_eval)
@@ -182,6 +189,6 @@ def analyze_game_full(engine: chess.engine.SimpleEngine, game: dict,
                 "opening_eco":    game.get("opening_eco", ""),
             })
 
-    return blunders, overall_peak
+    return blunders, overall_peak, final_eval
 
 
